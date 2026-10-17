@@ -1,0 +1,6 @@
+build/
+*.o
+*.log
+*.stage
+*.bak
+*.swp
