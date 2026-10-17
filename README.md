@@ -18,13 +18,25 @@
 
 ## 编译
 
+项目提供两个版本：
+- `ghostlock54.c`：英文原版（兼容性更好，方便搜索报错）
+- `ghostlock54_zh.c`：中文本地化版（日志全中文，方便阅读进度）
+
 需要 AArch64 clang 或 NDK（推荐使用 `-O3` 与 `armv8.2-a` 指令集加速采样）：
 
 ```sh
+# 编译英文版
 clang -O3 -march=armv8.2-a+crc -pthread ghostlock54.c -o ghostlock54
+
+# 编译中文版（必须指定 UTF-8 编码）
+clang -O3 -march=armv8.2-a+crc -pthread -finput-charset=utf-8 ghostlock54_zh.c -o ghostlock54_zh
 ```
 
 运行
+
+编译完成后，将对应的二进制文件推送到设备并赋予执行权限。
+
+英文原版：
 
 ```sh
 adb push ghostlock54 /data/local/tmp/ghostlock54
@@ -32,11 +44,19 @@ adb shell chmod 755 /data/local/tmp/ghostlock54
 adb shell -t /data/local/tmp/ghostlock54
 ```
 
-支持预检模式（不触发越界写，不破坏内核状态）：
+中文版：
 
 ```sh
-adb shell /data/local/tmp/ghostlock54 --leak-only
-adb shell /data/local/tmp/ghostlock54 --leak-y-only
+adb push ghostlock54_zh /data/local/tmp/ghostlock54_zh
+adb shell chmod 755 /data/local/tmp/ghostlock54_zh
+adb shell -t /data/local/tmp/ghostlock54_zh
+```
+
+支持预检模式（不触发越界写，不破坏内核状态），以中文版为例：
+
+```sh
+adb shell /data/local/tmp/ghostlock54_zh --leak-only
+adb shell /data/local/tmp/ghostlock54_zh --leak-y-only
 ```
 
 运行结果
