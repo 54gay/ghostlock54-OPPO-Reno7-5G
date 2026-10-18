@@ -129,7 +129,7 @@ int main(int argc, char *argv[]) {
     sendmsg(sock, &msg, 0);
     if (slave >= 0) close(slave);
 
-    char exit_code = 1;
+    char exit_code = 1; 
     if (master >= 0) {
         struct termios orig, raw;
         tcgetattr(STDIN_FILENO, &orig);
@@ -137,32 +137,42 @@ int main(int argc, char *argv[]) {
         tcsetattr(STDIN_FILENO, TCSANOW, &raw);
 
         fd_set readfds; char buf[4096]; int n;
-        int master_alive = 1; // 修复点：增加标志位，防止命令过快退出时丢失退出码
+        int master_alive = 1;
+        int stdin_alive = 1;
 
         while (1) {
             FD_ZERO(&readfds);
-            FD_SET(STDIN_FILENO, &readfds);
+            if (stdin_alive) FD_SET(STDIN_FILENO, &readfds);
             if (master_alive) FD_SET(master, &readfds);
             FD_SET(sock, &readfds);
 
-            if (select((master > sock ? master : sock) + 1, &readfds, NULL, NULL, NULL) < 0) break;
+            int max_fd = sock;
+            if (stdin_alive && STDIN_FILENO > max_fd) max_fd = STDIN_FILENO;
+            if (master_alive && master > max_fd) max_fd = master;
 
-            if (FD_ISSET(STDIN_FILENO, &readfds)) {
+            if (select(max_fd + 1, &readfds, NULL, NULL, NULL) < 0) break;
+
+            if (stdin_alive && FD_ISSET(STDIN_FILENO, &readfds)) {
                 n = read(STDIN_FILENO, buf, sizeof(buf)); 
-                if (n <= 0) break;
-                if (master_alive) write(master, buf, n);
+                if (n > 0) {
+                    if (master_alive) write(master, buf, n);
+                } else {
+                    stdin_alive = 0; 
+                }
             }
             if (master_alive && FD_ISSET(master, &readfds)) {
                 n = read(master, buf, sizeof(buf)); 
                 if (n > 0) {
                     write(STDOUT_FILENO, buf, n);
                 } else {
-                    master_alive = 0; // 子进程结束，终端 EOF，但继续等 sock 的退出码
+                    master_alive = 0; 
                 }
             }
             if (FD_ISSET(sock, &readfds)) {
-                read(sock, &exit_code, 1); 
-                break; // 收到真实退出码，退出循环
+                if (read(sock, &exit_code, 1) != 1) {
+                    exit_code = 1; 
+                }
+                break; 
             }
         }
         tcsetattr(STDIN_FILENO, TCSANOW, &orig);
