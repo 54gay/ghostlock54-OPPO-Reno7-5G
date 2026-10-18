@@ -137,21 +137,32 @@ int main(int argc, char *argv[]) {
         tcsetattr(STDIN_FILENO, TCSANOW, &raw);
 
         fd_set readfds; char buf[4096]; int n;
+        int master_alive = 1; // 修复点：增加标志位，防止命令过快退出时丢失退出码
+
         while (1) {
             FD_ZERO(&readfds);
-            FD_SET(STDIN_FILENO, &readfds); FD_SET(master, &readfds); FD_SET(sock, &readfds);
+            FD_SET(STDIN_FILENO, &readfds);
+            if (master_alive) FD_SET(master, &readfds);
+            FD_SET(sock, &readfds);
+
             if (select((master > sock ? master : sock) + 1, &readfds, NULL, NULL, NULL) < 0) break;
 
             if (FD_ISSET(STDIN_FILENO, &readfds)) {
-                n = read(STDIN_FILENO, buf, sizeof(buf)); if (n <= 0) break;
-                write(master, buf, n);
+                n = read(STDIN_FILENO, buf, sizeof(buf)); 
+                if (n <= 0) break;
+                if (master_alive) write(master, buf, n);
             }
-            if (FD_ISSET(master, &readfds)) {
-                n = read(master, buf, sizeof(buf)); if (n <= 0) break;
-                write(STDOUT_FILENO, buf, n);
+            if (master_alive && FD_ISSET(master, &readfds)) {
+                n = read(master, buf, sizeof(buf)); 
+                if (n > 0) {
+                    write(STDOUT_FILENO, buf, n);
+                } else {
+                    master_alive = 0; // 子进程结束，终端 EOF，但继续等 sock 的退出码
+                }
             }
             if (FD_ISSET(sock, &readfds)) {
-                read(sock, &exit_code, 1); break;
+                read(sock, &exit_code, 1); 
+                break; // 收到真实退出码，退出循环
             }
         }
         tcsetattr(STDIN_FILENO, TCSANOW, &orig);
