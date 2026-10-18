@@ -9,7 +9,6 @@
 #include <sys/stat.h>
 #include <signal.h>
 #include <fcntl.h>
-#include <sys/prctl.h>
 #include <sys/uio.h>
 #include <sys/ioctl.h>
 #include <grp.h>
@@ -42,22 +41,14 @@ int check_whitelist(uid_t uid) {
     fclose(fp); return 0;
 }
 
-void daemonize() {
-    if (fork() > 0) exit(0);
-    setsid();
-    if (fork() > 0) exit(0);
-    signal(SIGHUP, SIG_IGN);
-    int fd = open("/dev/null", O_RDWR);
-    if (fd >= 0) { dup2(fd, 0); dup2(fd, 1); dup2(fd, 2); if (fd > 2) close(fd); }
-}
-
 int main() {
+    // 1. 单例检测
     int test_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (test_fd >= 0) {
         struct sockaddr_un test_addr = { .sun_family = AF_UNIX };
         strncpy(test_addr.sun_path, SOCKET_PATH, sizeof(test_addr.sun_path) - 1);
         if (connect(test_fd, (struct sockaddr *)&test_addr, sizeof(test_addr)) == 0) {
-            close(test_fd); return 0;
+            close(test_fd); return 0; // 已经有一个在跑了，静默退出
         }
         close(test_fd);
     }
@@ -65,20 +56,16 @@ int main() {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGCHLD, SIG_IGN); 
 
-    daemonize();
-    
-    int oom = open("/proc/self/oom_score_adj", O_WRONLY);
-    if (oom >= 0) { write(oom, "-1000", 5); close(oom); }
-    prctl(PR_SET_NAME, "[kworker/u16:2]", 0, 0, 0);
-
     unlink(SOCKET_PATH);
     int server = socket(AF_UNIX, SOCK_STREAM, 0);
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
     strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
+    
     if (bind(server, (struct sockaddr *)&addr, sizeof(addr)) < 0) return 1;
     chmod(SOCKET_PATH, 0777);
-    listen(server, 10);
+    if (listen(server, 10) < 0) return 1;
 
+    // 2. 核心服务循环
     while (1) {
         int client = accept(server, NULL, NULL);
         if (client < 0) continue;
@@ -99,6 +86,7 @@ int main() {
                 memcpy(fds, CMSG_DATA(cmsg), sizeof(int) * 3);
         }
 
+        // 3. 解析 payload: uid:gid:groups:cmd
         char *uid_s = payload, *gid_s = strchr(uid_s, ':');
         if (!gid_s) { close(client); continue; } *gid_s++ = '\0';
         char *grp_s = strchr(gid_s, ':');
@@ -106,6 +94,7 @@ int main() {
         char *cmd = strchr(grp_s, ':');
         if (!cmd) { close(client); continue; } *cmd++ = '\0';
 
+        // 4. 执行逻辑
         pid_t pid = fork();
         if (pid == 0) {
             close(server);
