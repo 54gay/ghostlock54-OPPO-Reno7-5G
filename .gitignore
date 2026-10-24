@@ -1,6 +1,9 @@
 build/
+ghostlock54
 *.o
 *.log
-*.stage
 *.bak
+*.bak*
 *.swp
+*.stage
+patch_*.py
