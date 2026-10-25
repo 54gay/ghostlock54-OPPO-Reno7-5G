@@ -163,6 +163,27 @@ write_value() 每次消耗一个 fake lock 窗口，windows[] 共 10 个：
 · 恢复系统到正常状态（SELinux 回 enforcing、清理内核内残留 PI 引用）只能靠重启（adb reboot）。
 · 仅在你自己拥有或明确授权测试的设备上使用。
 
+KernelSU 集成（kernelsu/）
+
+本仓库附带 KernelSU 3.3.1 的 5.4.254 移植（kernelsu/ 目录），配合 GhostLock54
+可以把手动 # shell 升级成完整的 root 管理方案：
+
+1. 运行 ghostlock54 拿到 # shell（SELinux 已 Permissive）
+2. 在这个 root shell 里执行：
+
+   sh /data/local/tmp/kernelsu/load_ksu_54.sh
+
+3. 打开 KernelSU Manager 授权应用；之后任意已授权 app 的终端里 su 即可得到
+   u:r:ksu:s0 的 root shell
+
+模块是 runtime 加载（late-load），不修改 boot.img / 任何分区；重启后重新跑一次
+脚本即可。详见 kernelsu/README.md 与 kernelsu/SUMMARY_5.4_KSU.md（移植全过程与
+踩坑记录，包括 ColorOS 隐藏内核反提权 oplus_root_check 的绕过、5.4 原生 sepolicy
+注入实现等）。
+
+kernelsu/ 目录下的源代码派生自 KernelSU，按 GPL-2.0 分发，与主仓库的
+Apache-2.0 分开。
+
 许可证
 
 Apache License 2.0
