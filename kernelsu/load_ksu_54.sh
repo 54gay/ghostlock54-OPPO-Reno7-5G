@@ -34,6 +34,6 @@ echo "[*] modules:"; grep -c kernelsu /proc/modules
 # Restart the manager so it picks up the fresh driver fd
 echo "[*] restarting KernelSU Manager"
 am force-stop me.weishu.kernelsu 2>/dev/null
-sleep 1
+sleep 0.1
 am start -n me.weishu.kernelsu/.ui.MainActivity >/dev/null 2>&1
 echo "[*] done."
