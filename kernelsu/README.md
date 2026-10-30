@@ -1,63 +1,70 @@
-# KernelSU 3.3.1 port for OPPO Reno7 5G (PFJM10)
+# 面向 OPPO Reno7 5G（PFJM10）的 KernelSU 3.3.1 移植
 
-面向本机（OPPO Reno7 5G / OP5227，内核 `5.4.254-qgki-gaa96eae94d32`）的 KernelSU
-内核模块移植，配合本仓库的 GhostLock54 使用：
+本目录是 KernelSU v3.3.1 针对本机内核 `5.4.254-qgki-gaa96eae94d32` 的移植，
+以运行时内核模块（late-load）加载，不改动 boot.img / 任何分区。
 
-1. 先用 `ghostlock54` 拿到 uid=0 的 `#` shell（SELinux 已置 Permissive）
-2. 在这个 root shell 里执行 `sh load_ksu_54.sh` 加载 `kernelsu.ko`
-3. 打开 KernelSU Manager，给需要的 app 授权；之后任意已授权 app 的终端里
-   `su` 都能直接拿到 `u:r:ksu:s0` 的 root shell
+配合 GhostLock54 使用：
 
-模块是**运行时加载（late-load）**的：不动 boot.img、不动任何分区，重启后需要
-在领到 root 后重新跑一次 `load_ksu_54.sh`。
+1. 运行 `ghostlock54` 拿到 `#` shell（SELinux 已按需切换）
+2. 在 root shell 里执行：
+
+   ```sh
+   sh /data/local/tmp/kernelsu/load_ksu_54.sh
+   # 或（如果在设备本地放了 ko）
+   sh /data/local/tmp/load_ksu_54.sh
+   ```
+
+3. 脚本会自动重启 KernelSU Manager；给需要的 app 授权后，任意已授权 app 的
+   终端里 `su` 即可得到 `u:r:ksu:s0` 的 root shell
+
+模块是**运行时加载**，重启后需要重新跑一次加载脚本。
 
 ## 文件
 
 | 文件 | 说明 |
 |---|---|
-| `kernelsu.ko` | 预编译模块（KernelSU v3.3.1 端口，KSU_VERSION 32680，uapi 5） |
-| `load_ksu_54.sh` | 加载脚本（系统 sh；已加载则直接退出） |
-| `SUMMARY_5.4_KSU.md` | 完整技术移植记录：所有踩过的坑与修复 |
-| `src/` | 模块源码（KernelSU GPL-2.0 端口） |
-| `build.sh` | 交叉编译脚本（需要配套的内核源码树） |
+| `kernelsu.ko` | 预编译模块（KSU_VERSION 32680，uapi 5） |
+| `load_ksu_54.sh` | 加载脚本（系统 sh；结尾自动重启 Manager） |
+| `SUMMARY_5.4_KSU.md` | 完整移植记录（所有坑与修复，中文） |
+| `src/` | 模块源码（派生自 KernelSU，GPL-2.0） |
+| `build.sh` | 交叉编译脚本（需要配套内核源码树） |
 
-## 用法
+## 加载脚本行为
 
-设备端（把整个 `kernelsu/` 目录推到 `/data/local/tmp/kernelsu/` 即可）：
+1. 检查 `/data/local/tmp/kernelsu.ko`，不存在则提示放置位置并退出
+2. 模块已加载 → 直接退出（不卸载、不杀进程）
+3. 否则在 `kptr_restrict=1`（普通用户读不到 kallsyms、root 可读）下解析
+   `kallsyms_lookup_name` 地址，通过 `kln=` 参数传给模块后 `insmod`
+4. 强制停止并重新启动 KernelSU Manager（`am force-stop` + `am start`），
+   让 Manager 加载新模块的驱动
 
-```sh
-# 在 ghostlock54 弹出的 # shell 里
-sh /data/local/tmp/kernelsu/load_ksu_54.sh
-# 然后打开 KernelSU Manager（me.weishu.kernelsu）
-```
+## SELinux 模式
 
-脚本行为：
-- 找不到 ko 时提示放置路径并退出
-- 模块已加载时直接退出（不卸载、不杀进程）
-- 否则在 `kptr_restrict=1`（普通用户读不到 kallsyms、root 可读）下解析
-  `kallsyms_lookup_name` 地址，通过 `kln=` 参数传给模块后 `insmod`
+- 默认 `enforce`（加载成功后 `setenforce 1`）
+- 需要保持当前模式时（如 exploit 破坏过 SELinux 状态、或不想强制）：
 
-SELinux 模式：
-- 默认 `enforce`（加载成功后 setenforce 1）
-- 如果某种状态下强制模式导致系统异常，可用 `permissive=1` 参数加载：
-  `insmod kernelsu.ko kln=0x... level=3 permissive=1`（保持当前 SELinux 模式）
-- 注意：ghostlock 若破坏过 SELinux 状态（旧版本 exploit），强制模式可能让系统
-  服务大面积被拒，此时请用 `permissive=1` 或重启后重新加载
+  ```sh
+  /system/bin/insmod /data/local/tmp/kernelsu.ko kln=0x... level=3 permissive=1
+  ```
 
-## 这套移植解决了什么（详见 SUMMARY_5.4_KSU.md）
+- 强制模式下，ghostlock 直接给出的 `u:r:kernel:s0` shell 不能执行
+  `/system/bin` 下的命令（会被拒绝终止）。解决：用 `su` 拿 ksu 域 shell、
+  或在 exploit 里 `setcon("u:r:shell:s0")`、或 `runcon u:r:shell:s0 sh 脚本`、
+  或 `permissive=1` 加载。
 
-- 5.4 vendor 内核没有导出 `kallsyms_lookup_name`、`security_load_policy`、
-  `policydb_read/write`、`avtab_*`、`hashtab_*` 等，全部用 kallsyms 地址 +
-  内联 asm `blr` 蹦床解析调用（同时绕过 KernelCFI）
-- 直钩 `sys_call_table`（execve/execveat/newfstatat/faccessat/setresuid），规避
-  5.4 上 tracepoint 方案对 usap64 的崩溃
-- 修复了 `strncpy_from_user_nofault` 参数顺序 bug（否则终端里 `su` 永远
-  “not found”）
-- 5.4 原生 sepolicy 注入：`security_read_policy → policydb_read → 加 ksu 规则 →
-  policydb_write → security_load_policy`，真正生成 `u:r:ksu:s0` 域
-- 绕开 ColorOS 隐藏的内核反提权（`oplus_root_check_succ` 上报 +
-  `oplus_invoke_syscall` 里 `do_group_exit` 杀进程），补丁点为 `ret` / NOP
-- 跳过 KSU 的 `setenforce(true)`（本机 SELinux 已被 exploit 破坏，强制会断网）
+## 关键实现（详见 SUMMARY_5.4_KSU.md）
+
+- vendor 内核未导出 `kallsyms_lookup_name` / `security_load_policy` /
+  `policydb_*` / `avtab_*` / `hashtab_*` 等 → 全部用 kln 地址 + 内联 asm
+  `blr` 蹦床调用（同时绕过 KernelCFI）
+- 直钩 `sys_call_table`（execve/execveat/newfstatat/faccessat/setresuid），
+  规避 5.4 上 tracepoint 方案对 usap64 的崩溃
+- 修复 `strncpy_from_user_nofault` 参数顺序（否则终端里 `su` 永远 not found）
+- 5.4 原生 sepolicy 注入（security_read_policy → policydb_read → 加规则 →
+  policydb_write → security_load_policy），真正生成 `u:r:ksu:s0` 域
+- 绕开 ColorOS 隐藏内核反提权（`oplus_root_check_succ` + `oplus_invoke_syscall`
+  的 `do_group_exit` 杀进程），补丁为 `ret` / NOP
+- su 后端使用 Manager APK 目录下的 `lib/arm64/libksud.so`
 
 ## 许可
 

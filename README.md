@@ -10,25 +10,30 @@ GhostLock54 for OPPO Reno7 5G
 · 完整 capability 集合（CapPrm / CapEff / CapBnd = 0x0000003fffffffff，来自 init_cred）
 · SELinux 切换为 Permissive（enforce 1 → 0）
 · 清目标任务的 task_struct.seccomp，让子进程 fork 后不再被 Android seccomp filter 拦截（Seccomp: 0）
-· 通过 libselinux 的 setcon() 把子进程上下文从 u:r:kernel:s0 切到 u:r:shell:s0
-· 提权成功后，直接在当前终端原地弹出一个拥有完整 Root 权限的 # Shell，context 为 shell 域
+· 不切换 SELinux 域：子进程保持 init_cred 绑定的 u:r:kernel:s0 域，拿到的是 kernel 域的 root shell
+· 提权成功后，直接在当前终端原地弹出一个拥有完整 Root 权限的 # Shell
 
 重要提示（防内核崩溃）：由于漏洞利用后必须保持主进程存活以防内核悬挂指针引发崩溃（Kernel Panic），父进程会原地进入死循环挂起。当你在弹出的 # shell 中输入 exit 退出后，父进程依然在后台挂起。此时如果你想彻底结束程序，直接按电源键重启手机即可。
 
 编译
 
-需要 libselinux（Android 系统核心库，bionic 环境自带头文件和动态库）：
+不再依赖 libselinux。代码里所有 SELinux 交互（/proc/self/attr/current、/sys/fs/selinux/enforce）都是普通文件 IO，无需 -lselinux 或 selinux/selinux.h：
 
 ```sh
-clang -O2 -pthread ghostlock54.c -o ghostlock54 -lselinux
+clang -O2 -pthread ghostlock54.c -o ghostlock54
 ```
 
-如果提示找不到 selinux/selinux.h，说明当前编译环境不是 Termux 或 NDK 内置路径，需要额外指定：
+NDK、Termux clang、aarch64-linux-gnu-gcc 均可直接编译；静态编译示例：
 
 ```sh
-clang -O2 -pthread ghostlock54.c -o ghostlock54 \
-  -I/data/data/com.termux/files/usr/include \
-  -L/data/data/com.termux/files/usr/lib -lselinux
+aarch64-linux-gnu-gcc -O2 -static -pthread ghostlock54.c -o ghostlock54
+```
+
+验证无 libselinux 依赖：
+
+```sh
+nm -u ghostlock54 | grep -i selinux    # 应无输出
+nm -u ghostlock54 | grep -i setcon     # 应无输出
 ```
 
 运行
@@ -61,11 +66,16 @@ cat /proc/self/attr/current
 [+] [CHILD] CapPrm:     0000003fffffffff
 [+] [CHILD] CapEff:     0000003fffffffff
 [+] [CHILD] CapBnd:     0000003fffffffff
-[+] [CHILD] context: u:r:kernel:s0 -> u:r:shell:s0
 [+] [CHILD] Running root action. Launching shell...
 ```
 
-/proc/self/status 示例：
+父进程侧会额外打印一行攻击完成后的 context（用于 debug，不影响利用）：
+
+```
+[*] parent post-exploit: u:r:untrusted_app:s0:c...
+```
+
+/proc/self/status 示例（root shell 内）：
 
 ```
 Uid:    0       0       0       0
@@ -79,21 +89,27 @@ Seccomp:        0
 
 CapEff 为 0x3fffffffff，即 bit 0..37 全 1，共 38 位，对应 Linux 5.4 内核已知的全部 capability（CAP_LAST_CAP = 37，CAP_AUDIT_READ）。这是因为 cred 指针被整体替换为 init_cred，而非逐位写入 cap 位图。init_cred 自带完整 cap 集合，且 user_ns 指向 init_user_ns，不受 SECURE_NOROOT 等 securebits 影响。
 
-SELinux 上下文切换
+关于 SELinux 域：不切换，保持 kernel 域
 
-exploit 完成 cred 替换后，child 进程的 uid 是 0、CapEff 全满，但 context 仍是 u:r:kernel:s0——因为 cred->security 的 sid 来自 init_cred，而 init_cred 绑定的是 kernel 域的 sid。
+exploit 完成后，子进程 uid 是 0、CapEff 全满、Seccomp 清零，SELinux context 是 u:r:kernel:s0——因为 cred 被整体替换为 init_cred，而 init_cred->security 绑定的就是 kernel 域的 sid。
 
-要把 context 切到 shell 域，child 在 exec /system/bin/sh 之前调用：
+本版本不主动 setcon 切域，理由：
 
-```c
-setcon("u:r:shell:s0");
+· kernel 域权限比 shell 域更大。kernel 域可以写 /sys/fs/selinux/policy、加载内核模块、直接访问多数受限内核接口；shell 域做不到。
+· kernel 域 root shell 已经完全满足 KernelSU late-load 的需求（见下方集成说明）。
+· 不依赖 libselinux，编译更简单、运行环境依赖更少。
+· 避免在提权后的子进程里再触发一次 SELinux 权限检查路径（setcon 会走 selinux_setprocattr 与 PROCESS__SETCURRENT 检查），减少额外扰动。
+
+如果你确实想把 context 切到 u:r:shell:s0，在 root shell 里手动执行即可（此时是全 cap + kernel 域，PROCESS__SETCURRENT 检查通过，策略层面允许 kernel → shell 的放宽）：
+
+```sh
+echo -n u:r:shell:s0 > /proc/self/attr/current
+cat /proc/self/attr/current      # 确认已切换
 ```
-
-setcon 是 libselinux 提供的用户态封装，底层等价于 open("/proc/self/attr/current") + write()，会经过 SELinux 的 selinux_setprocattr() 和 avc_has_perm(current_sid, new_sid, PROCESS__SETCURRENT) 检查。该检查需要 CAP_MAC_ADMIN；此时 child 已是 init_cred（全 cap），cap 检查通过；策略层面，本设备允许 kernel 域 setcurrent 到 shell 域，所以 errno=0，切换成功。
 
 切换是单向放宽的：kernel → shell 允许，但普通 shell 域（无 root、无 cap）无法 setcurrent 到 kernel 域。只有拿全 cap 的 kernel 域 root，才能自由 setcon 到任意放宽的目标域。
 
-如果要保留 kernel 域身份（比如需要写 /sys/fs/selinux/policy、加载内核模块），把 setcon 那一行注释掉即可，child 会以 u:r:kernel:s0 启动 root shell。
+建议：保留 kernel 域。只有在某些明确只认 u:r:shell:s0 的应用（部分脚本、模块、magisk 兼容路径）里再临时切。
 
 实现要点
 
@@ -165,24 +181,31 @@ write_value() 每次消耗一个 fake lock 窗口，windows[] 共 10 个：
 
 KernelSU 集成（kernelsu/）
 
-本仓库附带 KernelSU 3.3.1 的 5.4.254 移植（kernelsu/ 目录），配合 GhostLock54
-可以把手动 # shell 升级成完整的 root 管理方案：
+本仓库附带 KernelSU 3.3.1 的 5.4.254 移植（kernelsu/ 目录），配合 GhostLock54 可以把手动 # shell 升级成完整的 root 管理方案：
 
-1. 运行 ghostlock54 拿到 # shell（SELinux 已 Permissive）
+1. 运行 ghostlock54 拿到 # shell（exploit 会 setcon 到 u:r:shell:s0，强制模式下也能正常执行命令）
 2. 在这个 root shell 里执行：
-
+   ```sh
    sh /data/local/tmp/kernelsu/load_ksu_54.sh
+   ```
+3. 脚本加载模块后会自动重启 KernelSU Manager；在 Manager 里给需要的 app 授权，
+   之后任意已授权 app 的终端里 su 即可得到 u:r:ksu:s0 的 root shell
 
-3. 打开 KernelSU Manager 授权应用；之后任意已授权 app 的终端里 su 即可得到
-   u:r:ksu:s0 的 root shell
+模块是 runtime 加载（late-load），不修改 boot.img / 任何分区；重启后重新跑一次脚本即可。
 
-模块是 runtime 加载（late-load），不修改 boot.img / 任何分区；重启后重新跑一次
-脚本即可。详见 kernelsu/README.md 与 kernelsu/SUMMARY_5.4_KSU.md（移植全过程与
-踩坑记录，包括 ColorOS 隐藏内核反提权 oplus_root_check 的绕过、5.4 原生 sepolicy
-注入实现等）。
+SELinux：模块默认 setenforce 1（强制模式）；若某状态（例如旧的 exploit 破坏过 SELinux）强制模式让系统异常，加载时加 permissive=1 参数保持当前模式。注意强制模式下 u:r:kernel:s0 的 shell 不能执行 /system/bin 命令，所以 ghostlock 侧需要 setcon 到 shell 域（已加回），或改用 su 的 ksu 域 shell。
 
-kernelsu/ 目录下的源代码派生自 KernelSU，按 GPL-2.0 分发，与主仓库的
-Apache-2.0 分开。
+详见 kernelsu/README.md 与 kernelsu/SUMMARY_5.4_KSU.md（移植全过程与踩坑记录，包括 ColorOS 隐藏内核反提权 oplus_root_check 的绕过、5.4 原生 sepolicy 注入、终端 su 修复、rmmod panic 教训等）。
+
+kernelsu/ 目录下的源代码派生自 KernelSU，按 GPL-2.0 分发，与主仓库的 Apache-2.0 分开。
+
+变更说明（相对上一版）
+
+· setcon("u:r:shell:s0") 已加回：exploit 成功后把子进程从 u:r:kernel:s0 切到 shell 域，
+  这样在 KernelSU 默认的 SELinux 强制模式下也能正常执行 /system/bin 下的命令
+  （依赖 libselinux，编译需 -lselinux）。
+· log_context 保留：攻击前后打印进程上下文（纯文件 IO，读 /proc/self/attr/current）。
+· 编译命令：clang -O2 -pthread ghostlock54.c -o ghostlock54 -lselinux
 
 许可证
 

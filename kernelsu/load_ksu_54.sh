@@ -1,11 +1,9 @@
 #!/system/bin/sh
 # KernelSU 3.3.1 port for OPPO Reno7 5G (PFJM10), kernel 5.4.254-qgki-gaa96eae94d32
-# Run INSIDE a root shell (uid 0), e.g. the # shell spawned by ghostlock54.
+# Run INSIDE a root shell (uid 0), e.g. from a terminal after `su`.
 # Runtime module: must be reloaded after every reboot (no partition changes).
-#   sh load_ksu_54.sh
-DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
-KO="$DIR/kernelsu.ko"
-[ -f "$KO" ] || KO=/data/local/tmp/kernelsu.ko
+#   sh /storage/emulated/0/Download/load_ksu_54.sh
+KO=/data/local/tmp/kernelsu.ko
 
 if [ ! -f "$KO" ]; then
   echo "[!] $KO not found"
@@ -31,6 +29,11 @@ fi
 echo "[*] load module (kln=0x$KLN)"
 /system/bin/insmod "$KO" kln=0x$KLN level=3
 echo "insmod_ret=$? kln=$KLN"
-
 echo "[*] modules:"; grep -c kernelsu /proc/modules
-echo "[*] done. Open KernelSU Manager (me.weishu.kernelsu); typing su in any granted app terminal works."
+
+# Restart the manager so it picks up the fresh driver fd
+echo "[*] restarting KernelSU Manager"
+am force-stop me.weishu.kernelsu 2>/dev/null
+sleep 1
+am start -n me.weishu.kernelsu/.ui.MainActivity >/dev/null 2>&1
+echo "[*] done."
