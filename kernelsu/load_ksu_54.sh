@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/system/bin/sh
 # KernelSU 3.3.1 port for OPPO Reno7 5G (PFJM10), kernel 5.4.254-qgki-gaa96eae94d32
 # Run INSIDE a root shell (uid 0), e.g. from a terminal after `su`.
 # Runtime module: must be reloaded after every reboot (no partition changes).

@@ -1,4 +1,4 @@
-#!/system/bin/sh
+#!/data/data/com.termux/files/usr/bin/bash
 # Cross-compile kernelsu.ko out-of-tree against a prepared OPPO sm7325 kernel tree.
 #
 # Requirements:
