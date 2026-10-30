@@ -17,23 +17,26 @@ GhostLock54 for OPPO Reno7 5G
 
 编译
 
-不再依赖 libselinux。代码里所有 SELinux 交互（/proc/self/attr/current、/sys/fs/selinux/enforce）都是普通文件 IO，无需 -lselinux 或 selinux/selinux.h：
+需要 libselinux（exploit 用 setcon 切换 SELinux 域，Android 系统核心库，bionic 环境自带头文件和动态库）：
 
 ```sh
-clang -O2 -pthread ghostlock54.c -o ghostlock54
+clang -O2 -pthread ghostlock54.c -o ghostlock54 -lselinux
 ```
 
-NDK、Termux clang、aarch64-linux-gnu-gcc 均可直接编译；静态编译示例：
+如果提示找不到 selinux/selinux.h，说明当前编译环境不是 Termux 或 NDK 内置路径，需要额外指定：
 
 ```sh
-aarch64-linux-gnu-gcc -O2 -static -pthread ghostlock54.c -o ghostlock54
+clang -O2 -pthread ghostlock54.c -o ghostlock54 \
+  -I/data/data/com.termux/files/usr/include \
+  -L/data/data/com.termux/files/usr/lib -lselinux
 ```
 
-验证无 libselinux 依赖：
+如果链接报 `undefined symbol: setcon`，就是漏了 `-lselinux`，加上即可。
+
+验证动态库依赖：
 
 ```sh
-nm -u ghostlock54 | grep -i selinux    # 应无输出
-nm -u ghostlock54 | grep -i setcon     # 应无输出
+nm -u ghostlock54 | grep -i selinux    # 能看到 setcon（来自 libselinux）
 ```
 
 运行
@@ -89,27 +92,26 @@ Seccomp:        0
 
 CapEff 为 0x3fffffffff，即 bit 0..37 全 1，共 38 位，对应 Linux 5.4 内核已知的全部 capability（CAP_LAST_CAP = 37，CAP_AUDIT_READ）。这是因为 cred 指针被整体替换为 init_cred，而非逐位写入 cap 位图。init_cred 自带完整 cap 集合，且 user_ns 指向 init_user_ns，不受 SECURE_NOROOT 等 securebits 影响。
 
-关于 SELinux 域：不切换，保持 kernel 域
+关于 SELinux 域：setcon 到 shell 域
 
-exploit 完成后，子进程 uid 是 0、CapEff 全满、Seccomp 清零，SELinux context 是 u:r:kernel:s0——因为 cred 被整体替换为 init_cred，而 init_cred->security 绑定的就是 kernel 域的 sid。
+exploit 完成后，子进程 uid 是 0、CapEff 全满、Seccomp 清零，SELinux context
+初始是 u:r:kernel:s0——因为 cred 被整体替换为 init_cred，而 init_cred->security
+绑定的就是 kernel 域的 sid。
 
-本版本不主动 setcon 切域，理由：
+本版本会在提权完成后调用 setcon("u:r:shell:s0") 切到 shell 域，理由：
 
-· kernel 域权限比 shell 域更大。kernel 域可以写 /sys/fs/selinux/policy、加载内核模块、直接访问多数受限内核接口；shell 域做不到。
-· kernel 域 root shell 已经完全满足 KernelSU late-load 的需求（见下方集成说明）。
-· 不依赖 libselinux，编译更简单、运行环境依赖更少。
-· 避免在提权后的子进程里再触发一次 SELinux 权限检查路径（setcon 会走 selinux_setprocattr 与 PROCESS__SETCURRENT 检查），减少额外扰动。
+· KernelSU 模块默认开启 SELinux 强制模式（setenforce 1）。在强制模式下，
+  u:r:kernel:s0 的 shell 无法执行 /system/bin 下的命令（会被 SELinux 拒绝并终止），
+  这样 ghostlock 给出的 # shell 就没法正常用了。
+· u:r:shell:s0 是 Android 的 shell 域，权限足够（能 exec /system/bin 命令、
+  能加载内核模块、能读写 /data 等），强制模式下也能正常工作。
+· 切换是单向放宽：kernel → shell 允许；反向（无 root 的 shell 域切回 kernel 域）不允许。
+  只有拿全 cap 的 kernel 域 root 才能自由 setcon 到任意放宽的目标域。
+· 切换依赖 libselinux（编译需 -lselinux）。
 
-如果你确实想把 context 切到 u:r:shell:s0，在 root shell 里手动执行即可（此时是全 cap + kernel 域，PROCESS__SETCURRENT 检查通过，策略层面允许 kernel → shell 的放宽）：
-
-```sh
-echo -n u:r:shell:s0 > /proc/self/attr/current
-cat /proc/self/attr/current      # 确认已切换
-```
-
-切换是单向放宽的：kernel → shell 允许，但普通 shell 域（无 root、无 cap）无法 setcurrent 到 kernel 域。只有拿全 cap 的 kernel 域 root，才能自由 setcon 到任意放宽的目标域。
-
-建议：保留 kernel 域。只有在某些明确只认 u:r:shell:s0 的应用（部分脚本、模块、magisk 兼容路径）里再临时切。
+如果你希望保持 kernel 域（例如不启用 KernelSU 强制模式、或需要 kernel 域特有的
+权限），把子进程里 setcon("u:r:shell:s0") 那几行注释掉即可，此时 # shell 保持
+u:r:kernel:s0（permissive 下完全可用）。
 
 实现要点
 
