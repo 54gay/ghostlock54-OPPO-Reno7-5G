@@ -15,6 +15,7 @@
 #include "klog.h" // IWYU pragma: keep
 #include "manager/manager_identity.h"
 #include "manager/throne_tracker.h"
+#include "runtime/ksud.h"
 
 static DEFINE_MUTEX(throne_tracker_mutex);
 
@@ -198,6 +199,11 @@ static void search_manager(const char *path, int depth, struct list_head *uid_da
 
             bool is_manager = is_manager_apk(candidate_path);
             pr_info("Found manager base.apk at path: %s, is_manager: %d\n", candidate_path, is_manager);
+
+#ifdef KSU_54
+            /* Prefer the manager APK's bundled libksud.so as the su backend. */
+            ksu54_set_ksud_path_from_apk(candidate_path);
+#endif
 
             // Only crown if signature verification pass
             if (unlikely(!is_manager))

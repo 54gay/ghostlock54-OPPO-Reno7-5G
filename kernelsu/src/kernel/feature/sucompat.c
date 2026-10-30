@@ -65,9 +65,9 @@ static void __user *userspace_stack_buffer(const void *d, size_t len)
 
 static char __user *ksud_user_path(void)
 {
-    static const char ksud_path[] = KSUD_PATH;
+    const char *ksud_path = KSUD_PATH;
 
-    return userspace_stack_buffer(ksud_path, sizeof(ksud_path));
+    return userspace_stack_buffer(ksud_path, strlen(ksud_path) + 1);
 }
 
 static char __user *empty_user_path(void)

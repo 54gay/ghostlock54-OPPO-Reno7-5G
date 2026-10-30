@@ -191,8 +191,8 @@ int __init kernelsu_init(void)
             setenforce(true);
         }
 #else
-        /* Device SELinux is broken on this vendor kernel; forcing enforcing
-         * breaks networking, so keep the current state untouched. */
+        /* Enforcing breaks this device: the exploit-corrupted SELinux state
+         * plus the reloaded policy denies core services. Keep permissive. */
         pr_info("ksu54: keep SELinux enforcing state unchanged (%d)\n", getenforce());
 #endif
 

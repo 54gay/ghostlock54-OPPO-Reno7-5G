@@ -25,6 +25,13 @@
 #include "ksu.h"
 #include "runtime/ksud.h"
 #include "runtime/ksud_boot.h"
+
+#ifdef KSU_54
+/* init-rc strings below concatenate the path at compile time; keep the
+ * historical literal here (this rc is not used on late-load anyway). */
+#undef KSUD_PATH
+#define KSUD_PATH "/data/adb/ksud"
+#endif
 #include "policy/feature.h"
 #include "selinux/selinux.h"
 #include "hook/syscall_hook.h"
