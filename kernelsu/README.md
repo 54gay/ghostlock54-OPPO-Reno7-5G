@@ -37,6 +37,13 @@ sh /data/local/tmp/kernelsu/load_ksu_54.sh
 - 否则在 `kptr_restrict=1`（普通用户读不到 kallsyms、root 可读）下解析
   `kallsyms_lookup_name` 地址，通过 `kln=` 参数传给模块后 `insmod`
 
+SELinux 模式：
+- 默认 `enforce`（加载成功后 setenforce 1）
+- 如果某种状态下强制模式导致系统异常，可用 `permissive=1` 参数加载：
+  `insmod kernelsu.ko kln=0x... level=3 permissive=1`（保持当前 SELinux 模式）
+- 注意：ghostlock 若破坏过 SELinux 状态（旧版本 exploit），强制模式可能让系统
+  服务大面积被拒，此时请用 `permissive=1` 或重启后重新加载
+
 ## 这套移植解决了什么（详见 SUMMARY_5.4_KSU.md）
 
 - 5.4 vendor 内核没有导出 `kallsyms_lookup_name`、`security_load_policy`、

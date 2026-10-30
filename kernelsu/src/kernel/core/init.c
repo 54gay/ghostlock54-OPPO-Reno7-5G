@@ -76,6 +76,14 @@ __attribute__((naked)) int __init kernelsu_init_early(void)
 #endif
 
 struct cred *ksu_cred;
+
+#ifdef KSU_54
+/* Safety switch: insmod ... permissive=1 keeps the current SELinux mode
+ * instead of forcing enforcing. Default 0 = enforce. */
+static int ksu54_permissive;
+module_param_named(permissive, ksu54_permissive, int, 0);
+MODULE_PARM_DESC(permissive, "1 = keep SELinux mode unchanged (default 0 = enforce)");
+#endif
 bool ksu_late_loaded;
 
 #ifdef CONFIG_KSU_DEBUG
@@ -185,15 +193,18 @@ int __init kernelsu_init(void)
 
         ksu_feature_apply_forced();
 
-#ifndef KSU_54
-        if (!getenforce()) {
+#ifdef KSU_54
+        if (ksu54_permissive) {
+            pr_info("ksu54: permissive=1, keep SELinux state unchanged (%d)\n", getenforce());
+        } else if (!getenforce()) {
             pr_info("Permissive SELinux, enforcing\n");
             setenforce(true);
         }
 #else
-        /* Enforcing breaks this device: the exploit-corrupted SELinux state
-         * plus the reloaded policy denies core services. Keep permissive. */
-        pr_info("ksu54: keep SELinux enforcing state unchanged (%d)\n", getenforce());
+        if (!getenforce()) {
+            pr_info("Permissive SELinux, enforcing\n");
+            setenforce(true);
+        }
 #endif
 
     } else {
