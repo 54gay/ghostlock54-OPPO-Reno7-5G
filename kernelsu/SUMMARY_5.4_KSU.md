@@ -3,33 +3,62 @@
 本目录是 KernelSU v3.3.1 针对本机内核 `5.4.254-qgki-gaa96eae94d32` 的移植，
 以运行时内核模块（late-load）方式加载，不改动 boot.img / 任何分区。
 
+## 文件放置（重要）
+
+三个文件统一放在 `/data/local/tmp/` **根目录**，不要放子目录，也不要放 `/storage/emulated/0/Download/`：
+
+```
+/data/local/tmp/ghostlock54
+/data/local/tmp/kernelsu.ko
+/data/local/tmp/load_ksu_54.sh
+```
+
+`ghostlock54` 里 `execl` 的脚本路径硬编码为 `/data/local/tmp/load_ksu_54.sh`，
+`load_ksu_54.sh` 里 `insmod` 的模块路径硬编码为 `/data/local/tmp/kernelsu.ko`。
+旧文档里的 `/data/local/tmp/kernelsu/...` 子目录写法和 `/storage/emulated/0/Download/...`
+写法均已废弃。
+
 ## 交付物
 
 | 文件 | 说明 |
 |---|---|
-| `kernelsu.ko` | 预编译模块（KSU_VERSION 32680，uapi 5） |
-| `load_ksu_54.sh` | 启动/加载脚本（系统 sh；结尾自动重启 Manager） |
+| `kernelsu.ko` | 预编译模块（KSU_VERSION 32680，uapi 5），放 `/data/local/tmp/` |
+| `load_ksu_54.sh` | 启动/加载脚本（系统 sh；结尾自动重启 Manager），放 `/data/local/tmp/` |
 | `SUMMARY_5.4_KSU.md` | 本文件，移植全过程与踩坑记录 |
 | `src/` | 模块源码（派生自 KernelSU，GPL-2.0） |
 | `build.sh` | 交叉编译脚本（需要配套内核源码树） |
 
 ## 每次开机后的加载流程
 
-```sh
-# 1) 获得 root shell（ghostlock，或用 su 拿 ksu 域 shell）
-# 2) 加载模块
-sh /storage/emulated/0/Download/load_ksu_54.sh
-```
+- **当前版本**：直接跑 `ghostlock54`，exploit 提权成功后会**自动** `execl` 调用
+  `/data/local/tmp/load_ksu_54.sh`，你不需要手动拿 root shell、也不需要手动执行脚本。
+  脚本加载模块后自动重启 KernelSU Manager；在 Manager 里给需要的 app 授权，
+  之后任意已授权 app 的终端里 `su` 即可得到 `u:r:ksu:s0` 的 root shell。
 
-脚本行为：
-1. 检查 `/data/local/tmp/kernelsu.ko`，不存在则提示放置位置并退出（exit 1）
+  ```sh
+  adb shell -t /data/local/tmp/ghostlock54
+  ```
+
+- **v5.0 及以下**：`ghostlock54` 会原地弹出 `#` shell（并 `setcon` 到 `u:r:shell:s0`），
+  你需要在那个 root shell 里手动执行：
+
+  ```sh
+  sh /data/local/tmp/load_ksu_54.sh
+  ```
+
+> 「原地弹出 # shell」功能已停止更新，保留在发行版 v5.0 及以下。
+> 当前版本以 KernelSU late-load 为主路径。
+
+脚本行为（两个版本共用同一个 `load_ksu_54.sh`）：
+1. 检查 `/data/local/tmp/kernelsu.ko`（**根目录**），不存在则提示放置位置并退出（exit 1）
 2. 模块已加载 → 直接退出（不卸载、不杀进程，exit 0）
 3. 否则在 `kptr_restrict=1`（普通用户读不到 /proc/kallsyms、root 可读）下解析
    `kallsyms_lookup_name` 地址，传给模块的 `kln=` 参数后 `insmod`
 4. 最后强制停止并重新启动 KernelSU Manager（`am force-stop` + `am start`），
    让 Manager 拿到新模块的驱动 fd
 
-模块是运行时加载，**重启后需重新加载**。
+模块是运行时加载，**重启后需重新加载**（当前版本重新跑 `ghostlock54`，
+v5.0 及以下重新拿 `#` shell 后执行脚本）。
 
 ## 已验证功能
 
@@ -99,7 +128,7 @@ ColorOS 在 kernel 里内置了提权检测，检测到 app uid → 0 会直接�
 原因：shell 先用 `newfstatat("/system/bin/su")` 检查命令是否存在，sucompat
 的 stat/faccessat 钩子需要读路径，而 5.4 兼容层 `strncpy_from_user_nofault`
 调 `strncpy_from_unsafe_user` 时**参数顺序传反了**（内核原型是
-`(char *dst, const void __user *, long)`），读路径失败导致重定向从未发生。
+`(char *dst, const void __void *, long)`），读路径失败导致重定向从未发生。
 
 修复：参数改为 `(dst, uaddr, count)`。修复后 stat → faccessat → execve
 全链路都会重定向到 ksud，终端里 `su` 正常。
@@ -108,13 +137,13 @@ ColorOS 在 kernel 里内置了提权检测，检测到 app uid → 0 会直接�
 
 - 模块默认在 init 末尾执行 `setenforce(1)`（强制模式）
 - 若需要保持当前模式（例如 exploit 破坏过 SELinux 状态），加载时加：
-  `insmod kernelsu.ko kln=0x... level=3 permissive=1`
-- 注意：SELinux 强制模式下，**ghostlock 直接给出的 u:r:kernel:s0 shell
-  不能执行 /system/bin 下的命令**（会被拒绝并终止）。解决办法：
-  1. 用 KernelSU 的 `su` 拿 `u:r:ksu:s0` shell 再操作
-  2. 或在 exploit 里 `setcon("u:r:shell:s0")`（本项目已加回）
-  3. 或临时 `runcon u:r:shell:s0 sh 脚本`（临时 shell 域）
-  4. 或在加载时用 `permissive=1`
+  `insmod /data/local/tmp/kernelsu.ko kln=0x... level=3 permissive=1`
+- 注意：SELinux 强制模式下，**`u:r:kernel:s0` 的 shell 不能执行 /system/bin
+  下的命令**（会被拒绝并终止）。规避方式：
+  - **当前版本**：不依赖 exploit 原地 shell，直接用 KernelSU 的 `su`
+    拿 `u:r:ksu:s0` shell；
+  - **v5.0 及以下**：exploit 会 `setcon("u:r:shell:s0")`，或手动
+    `runcon u:r:shell:s0 sh 脚本`，或加载时用 `permissive=1`。
 
 ## 危险操作记录（勿踩）
 
