@@ -31,9 +31,12 @@ echo "[*] load module (kln=0x$KLN)"
 echo "insmod_ret=$? kln=$KLN"
 echo "[*] modules:"; grep -c kernelsu /proc/modules
 
-# Restart the manager so it picks up the fresh driver fd
+# Restart the manager so it picks up the fresh driver fd.
+# Kill and re-launch are separated by a pause: doing both back-to-back piles
+# up scheduler churn which has a small chance of tripping leftover kernel PI
+# state from the exploit (seen as a probabilistic panic at this step).
 echo "[*] restarting KernelSU Manager"
 am force-stop me.weishu.kernelsu 2>/dev/null
-sleep 0.1
+sleep 2
 am start -n me.weishu.kernelsu/.ui.MainActivity >/dev/null 2>&1
 echo "[*] done."
