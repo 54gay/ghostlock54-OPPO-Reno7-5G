@@ -36,7 +36,7 @@ echo "[*] modules:"; grep -c kernelsu /proc/modules
 # up scheduler churn which has a small chance of tripping leftover kernel PI
 # state from the exploit (seen as a probabilistic panic at this step).
 echo "[*] restarting KernelSU Manager"
-am force-stop me.weishu.kernelsu 2>/dev/null
-sleep 2
-am start -n me.weishu.kernelsu/.ui.MainActivity >/dev/null 2>&1
+am force-stop me.weishu.kernelsu
+sleep 0.1
+am start -n me.weishu.kernelsu/.ui.MainActivity
 echo "[*] done."
