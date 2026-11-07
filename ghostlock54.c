@@ -711,27 +711,6 @@ static void ksu_load_module(void) {
   else pr_error("[KSU] insmod failed ret=%d module=%s\n", ret, g_module_path);
 }
 
-/* 杀 Manager 再拉起（全自动刷新）。注意：不要加输出重定向，
- * 让 am 输出走终端，避免节奏过快触发 exploit 遗留 PI 状态的概率性 panic。 */
-static void ksu_restart_manager(void) {
-  pid_t p = fork();
-  if (p == 0) {
-    execl("/system/bin/am", "am", "force-stop", "me.weishu.kernelsu", (char *)NULL);
-    _exit(127);
-  }
-  if (p > 0) { int st; waitpid(p, &st, 0); }
-
-  usleep(100000); /* 0.1s */
-
-  p = fork();
-  if (p == 0) {
-    execl("/system/bin/am", "am", "start", "-n",
-          "me.weishu.kernelsu/.ui.MainActivity", (char *)NULL);
-    _exit(127);
-  }
-  if (p > 0) { int st; waitpid(p, &st, 0); }
-}
-
 static void usage(const char *prog) {
   fprintf(stderr,
           "Usage: %s [OPTIONS]\n"
@@ -924,8 +903,8 @@ int main(int argc, char **argv) {
       pr_success("[KSU] kernelsu already loaded, nothing to do\n");
     } else {
       ksu_load_module();
-      ksu_restart_manager();
     }
+    pr_success("[KSU] done. Now open KernelSU Manager (me.weishu.kernelsu) and grant root to your apps.\n");
     _exit(0);
   }
 

@@ -31,7 +31,7 @@
 
 - **当前版本**：直接跑 `ghostlock54`，exploit 提权成功后会**自动** `execl` 调用
   `/data/local/tmp/load_ksu_54.sh`，你不需要手动拿 root shell、也不需要手动执行脚本。
-  脚本加载模块后自动重启 KernelSU Manager；在 Manager 里给需要的 app 授权，
+  exploit 加载模块后提示手动打开 KernelSU Manager；在 Manager 里给需要的 app 授权，
   之后任意已授权 app 的终端里 `su` 即可得到 `u:r:ksu:s0` 的 root shell。
 
   ```sh

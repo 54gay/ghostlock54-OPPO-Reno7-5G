@@ -18,7 +18,7 @@ KernelSU 加载逻辑已集成进 `ghostlock54` 本体，**不再需要任何 sh
 ## 配合 GhostLock54 使用
 
 - **当前版本（v7.0+）**：运行 `ghostlock54`（可加 `-m/--module` 指定 ko 路径、`-h/--help` 查看帮助），
-  exploit 自动完成提权 + 加载模块 + 重启 Manager。在 Manager 里给需要的 app 授权后，
+  exploit 自动完成提权 + 加载模块，结束后提示手动打开 KernelSU Manager。在 Manager 里给需要的 app 授权后，
   任意已授权 app 的终端里 `su` 即可得到 `u:r:ksu:s0` 的 root shell。
 - **v6.x 及以下**：`ghostlock54` 自动执行 `/data/local/tmp/load_ksu_54.sh`（脚本已从本仓库移除，仅历史发行版保留）。
 

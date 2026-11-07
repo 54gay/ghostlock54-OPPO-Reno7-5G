@@ -229,7 +229,7 @@ kernelsu/ 目录下的源代码派生自 KernelSU，按 GPL-2.0 分发，与主�
 
 变更说明（相对上一版）
 
-· KernelSU 加载逻辑集成进 ghostlock54（不再需要 load_ksu_54.sh）：exploit 自动解析 kln、insmod、重启 Manager；新增 -m/--module 与 -h/--help 参数。
+· KernelSU 加载逻辑集成进 ghostlock54（不再需要 sh 脚本）：exploit 自动解析 kln、insmod，结束后提示手动打开 KernelSU Manager；新增 -m/--module 与 -h/--help 参数。
 · 停止更新「原地弹出 # shell」功能：需要该功能的用户请使用发行版 v5.0 及以下。
 · 文件路径统一到 /data/local/tmp/ 根目录：ghostlock54、kernelsu.ko 两个文件都放 /data/local/tmp/ 下，不再使用 /data/local/tmp/kernelsu/ 子目录。
 · 删除 write_value(child_task + 0x8d0, 0)：adb shell 场景下子进程 seccomp.mode 本来就是 0，该写为空操作。写入次数由 5 次降到 4 次，减少一次 PI 竞态失败点，成功率由约 80% 提升。若在 App 进程内跑（父进程带 seccomp filter），需要把这步加回。
