@@ -4,35 +4,31 @@
 
 ## 文件放置（重要）
 
-`kernelsu.ko` 和 `load_ksu_54.sh` 统一放在 `/data/local/tmp/` **根目录**，不要放 `kernelsu/` 子目录：
+`kernelsu.ko` 放在 `/data/local/tmp/` **根目录**（或任意路径，用 `-m/--module` 指定）：
 
 ```
 /data/local/tmp/ghostlock54
 /data/local/tmp/kernelsu.ko
-/data/local/tmp/load_ksu_54.sh
 ```
 
-`ghostlock54` 里 `execl` 的脚本路径硬编码为 `/data/local/tmp/load_ksu_54.sh`，`load_ksu_54.sh` 里 `insmod` 的模块路径硬编码为 `/data/local/tmp/kernelsu.ko`。旧文档里的 `/data/local/tmp/kernelsu/...` 子目录写法已废弃。
+KernelSU 加载逻辑已集成进 `ghostlock54` 本体，**不再需要任何 sh 脚本**。
+`ghostlock54` 提权成功后自动：解析 `kallsyms_lookup_name` → `insmod` 模块 →
+杀掉并重启 KernelSU Manager。
 
 ## 配合 GhostLock54 使用
 
-- **当前版本**：`ghostlock54` 提权成功后会自动 `execl("/system/bin/sh", "sh", "/data/local/tmp/load_ksu_54.sh")`，你不需要手动执行脚本。脚本加载模块后自动重启 KernelSU Manager；在 Manager 里给需要的 app 授权，之后任意已授权 app 的终端里 `su` 即可得到 `u:r:ksu:s0` 的 root shell。
-- **v5.0 及以下**：`ghostlock54` 会原地弹出 `#` shell（并 `setcon` 到 `u:r:shell:s0`），你需要在那个 root shell 里手动执行：
+- **当前版本（v7.0+）**：运行 `ghostlock54`（可加 `-m/--module` 指定 ko 路径、`-h/--help` 查看帮助），
+  exploit 自动完成提权 + 加载模块 + 重启 Manager。在 Manager 里给需要的 app 授权后，
+  任意已授权 app 的终端里 `su` 即可得到 `u:r:ksu:s0` 的 root shell。
+- **v6.x 及以下**：`ghostlock54` 自动执行 `/data/local/tmp/load_ksu_54.sh`（脚本已从本仓库移除，仅历史发行版保留）。
 
-  ```sh
-  sh /data/local/tmp/load_ksu_54.sh
-  ```
-
-> 「原地弹出 # shell」功能已停止更新，保留在发行版 v5.0 及以下。当前版本以 KernelSU late-load 为主路径。
-
-模块是**运行时加载**，重启后需要重新跑一次加载流程（当前版本重新跑 `ghostlock54`，v5.0 及以下重新拿 `#` shell 后执行脚本）。
+模块是**运行时加载**，重启后需要重新跑一次加载流程（当前版本重新跑 `ghostlock54`）。
 
 ## 文件
 
 | 文件 | 说明 |
 |---|---|
 | `kernelsu.ko` | 预编译模块（KSU_VERSION 32680，uapi 5） |
-| `load_ksu_54.sh` | 加载脚本（系统 sh；结尾自动重启 Manager） |
 | `SUMMARY_5.4_KSU.md` | 完整移植记录（所有坑与修复，中文） |
 | `src/` | 模块源码（派生自 KernelSU，GPL-2.0） |
 | `build.sh` | 交叉编译脚本（需要配套内核源码树） |

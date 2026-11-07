@@ -15,13 +15,14 @@ GhostLock54 for OPPO Reno7 5G
 
 文件放置约定
 
-与本 exploit 配套的两个文件统一放在 /data/local/tmp/ 根目录，不要再放子目录：
+与本 exploit 配套的文件统一放在 /data/local/tmp/ 根目录，不要再放子目录：
 
 · /data/local/tmp/ghostlock54 —— 编译产物
-· /data/local/tmp/kernelsu.ko —— KernelSU 模块
-· /data/local/tmp/load_ksu_54.sh —— 加载脚本
+· /data/local/tmp/kernelsu.ko —— KernelSU 模块（可用 -m/--module 指定其它路径）
 
-代码里 execl("/system/bin/sh", "sh", "/data/local/tmp/load_ksu_54.sh", ...) 硬编码的就是这个路径；load_ksu_54.sh 里 insmod 的 kernelsu.ko 也应指向 /data/local/tmp/kernelsu.ko。旧文档里的 /data/local/tmp/kernelsu/... 子目录写法已废弃。
+KernelSU 加载逻辑已集成进 ghostlock54 本体（不再需要任何 sh 脚本）：
+exploit 提权成功后自动解析 kallsyms_lookup_name 地址、insmod 模块、并杀掉重启
+KernelSU Manager。
 
 停止更新说明
 
@@ -65,27 +66,29 @@ nm -u ghostlock54 | grep -i selinux    # 能看到 setcon（来自 libselinux）
 
 运行
 
-编译完成后，把三个文件都推送到 /data/local/tmp/ 根目录，并给可执行文件赋权：
+编译完成后，把两个文件都推送到 /data/local/tmp/ 根目录，并给可执行文件赋权：
 
 ```sh
 adb push ghostlock54          /data/local/tmp/ghostlock54
 adb push kernelsu.ko          /data/local/tmp/kernelsu.ko
-adb push load_ksu_54.sh       /data/local/tmp/load_ksu_54.sh
 adb shell chmod 755 /data/local/tmp/ghostlock54
 adb shell chmod 644 /data/local/tmp/kernelsu.ko
-adb shell chmod 755 /data/local/tmp/load_ksu_54.sh
 ```
 
-不要把 kernelsu.ko / load_ksu_54.sh 放进 /data/local/tmp/kernelsu/ 之类的子目录。ghostlock54 里 execl 的脚本路径是 /data/local/tmp/load_ksu_54.sh，脚本里 insmod 的模块路径是 /data/local/tmp/kernelsu.ko，两者都按根目录写死。
+kernelsu.ko 路径默认 /data/local/tmp/kernelsu.ko，可用 -m/--module 指定其它位置。
 
 启动漏洞利用：
 
 ```sh
 adb shell -t /data/local/tmp/ghostlock54
+# 指定其它模块路径：
+adb shell -t /data/local/tmp/ghostlock54 -m /path/to/kernelsu.ko
+# 查看帮助：
+adb shell -t /data/local/tmp/ghostlock54 -h
 ```
 
 · v5.0 及以下：程序跑完后，终端会直接变成 # 提示符，此时你已获得 Root 权限，可以直接执行 id / getenforce / cat /proc/self/attr/current。
-· 当前版本：不再原地弹 #。exploit 只负责拿到内核任意写、把 cred 换成 init_cred、切 permissive、清 seccomp，然后调用 /data/local/tmp/load_ksu_54.sh 加载 /data/local/tmp/kernelsu.ko；之后用 KernelSU Manager 授权 app，在 app 终端里 su 拿 u:r:ksu:s0 的 root shell。
+· 当前版本：不再原地弹 #。exploit 只负责拿到内核任意写、把 cred 换成 init_cred、切 permissive、清 seccomp，然后自动解析 kallsyms_lookup_name、insmod 模块（默认 /data/local/tmp/kernelsu.ko）、杀掉并重启 KernelSU Manager；之后用 Manager 授权 app，在 app 终端里 su 拿 u:r:ksu:s0 的 root shell。
 
 程序输出示例（child 阶段）：
 
@@ -203,25 +206,22 @@ KernelSU 集成
 
 本仓库附带 KernelSU 3.3.1 的 5.4.254 移植（kernelsu/ 目录），配合 GhostLock54 把手动 root 升级成完整的 root 管理方案。
 
-文件放置（重要）：kernelsu.ko 和 load_ksu_54.sh 都放在 /data/local/tmp/ 根目录，不要放 kernelsu/ 子目录：
+加载逻辑已集成进 ghostlock54 本体，不再需要任何 sh 脚本。文件放置（重要）：两个文件都放在 /data/local/tmp/ 根目录：
 
 ```
 /data/local/tmp/ghostlock54
 /data/local/tmp/kernelsu.ko
-/data/local/tmp/load_ksu_54.sh
 ```
-
-load_ksu_54.sh 里 insmod 的模块路径应为 /data/local/tmp/kernelsu.ko；ghostlock54 里 execl 的脚本路径为 /data/local/tmp/load_ksu_54.sh，两者都已按根目录写死。
 
 流程：
 
-1. 运行 ghostlock54，等它执行到调用 load_ksu_54.sh 的阶段（当前版本由 exploit 自动调用；v5.0 及以下需你手动在 # shell 里执行）。
-2. 脚本会 insmod /data/local/tmp/kernelsu.ko 并自动重启 KernelSU Manager；在 Manager 里给需要的 app 授权。
-3. 之后任意已授权 app 的终端里 su 即可得到 u:r:ksu:s0 的 root shell。
+1. 运行 ghostlock54（可加 -m/--module 指定其它 ko 路径，-h/--help 查看帮助）
+2. exploit 提权成功后自动解析 kallsyms_lookup_name、insmod 模块、杀掉并重启 KernelSU Manager
+3. 在 Manager 里给需要的 app 授权；之后任意已授权 app 的终端里 su 即可得到 u:r:ksu:s0 的 root shell
 
-模块是 runtime 加载（late-load），不修改 boot.img / 任何分区；重启后重新跑一次脚本即可。
+模块是 runtime 加载（late-load），不修改 boot.img / 任何分区；重启后重新跑一次 ghostlock54 即可。
 
-SELinux：模块默认 setenforce 1（强制模式）；若某状态（例如旧的 exploit 破坏过 SELinux）强制模式让系统异常，加载时加 permissive=1 参数保持当前模式。注意强制模式下 u:r:kernel:s0 的 shell 不能执行 /system/bin 命令——v5.0 及以下的 ghostlock 侧会 setcon 到 shell 域规避，当前版本则完全交给 KernelSU 的 u:r:ksu:s0 shell，不再由 exploit 自己切域。
+SELinux：模块默认 setenforce 1（强制模式）；若某状态（例如旧的 exploit 破坏过 SELinux）强制模式让系统异常，加载时加 permissive=1 参数保持当前模式。注意强制模式下 u:r:kernel:s0 的 shell 不能执行 /system/bin 命令，因此 exploit 提权后会 setcon 到 u:r:shell:s0 再执行加载与 Manager 重启。
 
 详见 kernelsu/README.md 与 kernelsu/SUMMARY_5.4_KSU.md（移植全过程与踩坑记录，包括 ColorOS 隐藏内核反提权 oplus_root_check 的绕过、5.4 原生 sepolicy 注入、终端 su 修复、rmmod panic 教训等）。
 
@@ -229,8 +229,9 @@ kernelsu/ 目录下的源代码派生自 KernelSU，按 GPL-2.0 分发，与主�
 
 变更说明（相对上一版）
 
-· 停止更新「原地弹出 # shell」功能：当前版本不再维护原地 # 提示符 + setcon("u:r:shell:s0") 这套路径；需要该功能的用户请使用 发行版 v5.0 及以下。当前版本以 KernelSU late-load 为主路径。
-· 文件路径统一到 /data/local/tmp/ 根目录：ghostlock54、kernelsu.ko、load_ksu_54.sh 三个文件都放 /data/local/tmp/ 下，不再使用 /data/local/tmp/kernelsu/ 子目录。代码里 execl 的脚本路径、脚本里 insmod 的模块路径都按根目录写死。
+· KernelSU 加载逻辑集成进 ghostlock54（不再需要 load_ksu_54.sh）：exploit 自动解析 kln、insmod、重启 Manager；新增 -m/--module 与 -h/--help 参数。
+· 停止更新「原地弹出 # shell」功能：需要该功能的用户请使用发行版 v5.0 及以下。
+· 文件路径统一到 /data/local/tmp/ 根目录：ghostlock54、kernelsu.ko 两个文件都放 /data/local/tmp/ 下，不再使用 /data/local/tmp/kernelsu/ 子目录。
 · 删除 write_value(child_task + 0x8d0, 0)：adb shell 场景下子进程 seccomp.mode 本来就是 0，该写为空操作。写入次数由 5 次降到 4 次，减少一次 PI 竞态失败点，成功率由约 80% 提升。若在 App 进程内跑（父进程带 seccomp filter），需要把这步加回。
 · log_context 保留：攻击前后打印进程上下文（纯文件 IO，读 /proc/self/attr/current）。
 · 编译命令：clang -O2 -pthread ghostlock54.c -o ghostlock54 -lselinux

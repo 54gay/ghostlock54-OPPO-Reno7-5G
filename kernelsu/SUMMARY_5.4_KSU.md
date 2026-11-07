@@ -10,7 +10,6 @@
 ```
 /data/local/tmp/ghostlock54
 /data/local/tmp/kernelsu.ko
-/data/local/tmp/load_ksu_54.sh
 ```
 
 `ghostlock54` 里 `execl` 的脚本路径硬编码为 `/data/local/tmp/load_ksu_54.sh`，
@@ -23,7 +22,7 @@
 | 文件 | 说明 |
 |---|---|
 | `kernelsu.ko` | 预编译模块（KSU_VERSION 32680，uapi 5），放 `/data/local/tmp/` |
-| `load_ksu_54.sh` | 启动/加载脚本（系统 sh；结尾自动重启 Manager），放 `/data/local/tmp/` |
+| （无脚本） | 加载逻辑已集成进 ghostlock54 本体，不再需要脚本 |
 | `SUMMARY_5.4_KSU.md` | 本文件，移植全过程与踩坑记录 |
 | `src/` | 模块源码（派生自 KernelSU，GPL-2.0） |
 | `build.sh` | 交叉编译脚本（需要配套内核源码树） |
