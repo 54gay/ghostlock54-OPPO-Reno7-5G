@@ -739,26 +739,35 @@ int main(int argc, char **argv) {
   __orig_stdout = dup(STDOUT_FILENO);
   process_pid = getpid();
 
+  int module_given = 0;
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
       usage(argv[0]);
       return 0;
     } else if (strcmp(argv[i], "-m") == 0 || strcmp(argv[i], "--module") == 0) {
       if (i + 1 >= argc) {
-        pr_error("missing value for %s\n", argv[i]);
+        pr_warning("missing value for %s\n", argv[i]);
         usage(argv[0]);
         return 2;
       }
       snprintf(g_module_path, sizeof(g_module_path), "%s", argv[++i]);
+      module_given = 1;
     } else if (strcmp(argv[i], "--leak-only") == 0) {
       g_leak_only = 1;
     } else if (strcmp(argv[i], "--leak-y-only") == 0) {
       y_leak_only = 1;
     } else {
-      pr_error("unknown option: %s\n", argv[i]);
+      pr_warning("unknown option: %s\n", argv[i]);
       usage(argv[0]);
       return 2;
     }
+  }
+
+  /* 参数校验失败时只打印帮助、不执行 exploit */
+  if (module_given && access(g_module_path, F_OK) != 0) {
+    pr_warning("module file not found: %s\n", g_module_path);
+    usage(argv[0]);
+    return 2;
   }
 
   timer_reset();
