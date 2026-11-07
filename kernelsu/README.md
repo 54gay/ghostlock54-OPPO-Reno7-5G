@@ -44,6 +44,13 @@
 3. 否则在 `kptr_restrict=1`（普通用户读不到 kallsyms、root 可读）下解析 `kallsyms_lookup_name` 地址，通过 `kln=` 参数传给模块后 `insmod`
 4. 强制停止并重新启动 KernelSU Manager（`am force-stop` + `am start`），让 Manager 加载新模块的驱动
 
+## 稳定性说明（重要）
+
+加载脚本里 Manager 的 `am force-stop` / `am start` **不要加输出重定向**（`2>/dev/null`、`>/dev/null 2>&1`）。
+实测：带重定向时 `am` 立即返回、杀/拉节奏极快，小概率触碰 exploit 遗留的内核 PI 状态导致 panic
+（`futex_lock_pi → rt_mutex_cleanup_proxy_lock → rb_erase`）；去掉重定向让 `am` 输出走终端后，
+执行节奏自然放缓，长时间运行未再出现该概率性恐慌。
+
 ## SELinux 模式
 
 - 默认 `enforce`（加载成功后 `setenforce 1`）
