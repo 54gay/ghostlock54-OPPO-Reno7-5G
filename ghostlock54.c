@@ -939,14 +939,14 @@ int main(int argc, char **argv) {
   __atomic_store_n(done_flag, 1, __ATOMIC_RELEASE);
   fflush(stdout);
 
-  /* 1) 等 load_ksu_54.sh 完全结束 */
+  /* 1) 等子进程（模块加载 + 提示）结束 */
   int cstatus = 0;
   pid_t wp = waitpid(child_pid, &cstatus, 0);
   if (wp < 0 && errno != ECHILD) {
       pr_warning("[PARENT] waitpid(%d) failed: %s\n",
                  (int)child_pid, strerror(errno));
-  } else if (wp == child_pid) {
-      pr_success("[PARENT] script finished, status=0x%x\n", cstatus);
+  } else if (wp == child_pid && (!WIFEXITED(cstatus) || WEXITSTATUS(cstatus) != 0)) {
+      pr_warning("[PARENT] child exited abnormally: status=0x%x\n", cstatus);
   }
   fflush(stdout);
 
