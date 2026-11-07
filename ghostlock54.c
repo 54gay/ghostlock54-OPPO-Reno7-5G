@@ -621,25 +621,37 @@ static void ksu_set_kptr(int v) {
 }
 
 /* kptr_restrict=1：普通用户读不到 kallsyms，root(CAP_SYSLOG) 可以；
- * 若仍读不到地址则临时降为 0 重试，最后恢复为 1。 */
+ * 若仍读不到地址则临时降为 0 重试，最后恢复为 1。
+ * /proc/kallsyms 可达十几 MB，且单次 read() 只会返回一部分（seq_file），
+ * 因此必须循环读取、分块扫描。 */
 static unsigned long ksu_resolve_kln(void) {
-  static char syms[1 << 20];
+  static char chunk[65536 + 256];
   ksu_set_kptr(1);
   for (int round = 0; round < 2; round++) {
-    if (ksu_read_text("/proc/kallsyms", syms, sizeof(syms)) > 0) {
-      char *p = strstr(syms, "kallsyms_lookup_name");
-      while (p) {
-        if ((p == syms || p[-1] == ' ') &&
-            (p[20] == '\n' || p[20] == '\0')) break;
-        p = strstr(p + 1, "kallsyms_lookup_name");
+    int fd = open("/proc/kallsyms", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) { ksu_set_kptr(0); continue; }
+
+    size_t keep = 0;
+    for (;;) {
+      ssize_t n = read(fd, chunk + keep, 65536);
+      if (n <= 0) break;
+      size_t total = keep + (size_t)n;
+      char *p = chunk;
+      while ((p = strstr(p, "kallsyms_lookup_name")) != NULL) {
+        if (p > chunk && p[-1] == ' ' && p[20] == '\n') break;
+        if (p > chunk && p[-1] == ' ' && p[20] == '\0') break;
+        p += 20;
       }
       if (p) {
         char *q = p;
-        while (q > syms && q[-1] != '\n') q--;
+        while (q > chunk && q[-1] != '\n') q--;
         unsigned long addr = strtoul(q, NULL, 16);
-        if (addr) return addr;
+        if (addr) { close(fd); return addr; }
       }
+      keep = (total > 256) ? 256 : total;
+      memmove(chunk, chunk + total - keep, keep);
     }
+    close(fd);
     ksu_set_kptr(0);
   }
   ksu_set_kptr(1);
