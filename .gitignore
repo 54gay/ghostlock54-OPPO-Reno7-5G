@@ -7,3 +7,12 @@ ghostlock54
 *.swp
 *.stage
 patch_*.py
+
+# kernel module build artifacts
+*.o
+*.o.tmp
+*.ko
+.*.cmd
+.*.d
+modules.order
+Module.symvers
