@@ -47,12 +47,19 @@ sh /data/local/tmp/kernelsu.sh /path/to/kernelsu.ko
 
 编译
 
-一条命令搞定（make 会先编模块、拷贝到 kernelsu/kernelsu.ko，再把它链接进 ghostlock54）：
+一条命令搞定（make 会先编模块，再把它链接进 ghostlock54）。所有构建产物都在 `build/`：
+
+```
+build/kernelsu.full.ko   # make 编出来的原始模块（带调试段）
+build/kernelsu.ko        # 内嵌进 ghostlock54 的那份（默认已 strip）
+build/kernelsu_ko.o      # objcopy 对象文件
+ghostlock54              # 最终单文件
+```
 
 ```sh
-make            # 默认 STRIP=1：内嵌前去掉 ko 的调试段（约 325KB，二进制约 360KB）
+make            # 默认 STRIP=1：内嵌前去掉 ko 的调试段（ko 约 325KB，二进制约 360KB）
 make STRIP=0    # 保留完整 ko（约 5.7MB，二进制约 5.8MB）
-make module     # 只编模块并拷贝到 kernelsu/kernelsu.ko
+make module     # 只编模块 -> build/kernelsu.ko
 make clean
 ```
 
