@@ -19,6 +19,7 @@ GhostLock54 for OPPO Reno7 5G
 
 · /data/local/tmp/ghostlock54 —— 编译产物
 · /data/local/tmp/kernelsu.ko —— KernelSU 模块（可用 -m/--module 指定其它路径）
+· /data/local/tmp/kernelsu.sh —— **由 ghostlock54 每次启动时释放（覆盖）**的加载脚本
 
 KernelSU 加载逻辑已集成进 ghostlock54 本体（不再需要任何 sh 脚本）：
 exploit 提权成功后自动解析 kallsyms_lookup_name 地址、insmod 模块，完成后提示手动打开
@@ -30,6 +31,15 @@ KernelSU Manager。
 · **`-s/--shell`**：只拿 root shell，**不加载 KernelSU**，适合临时执行一次 root 命令。
 
 说明：`-s` 模式下终端里会直接出现 `#` 提示符（context `u:r:kernel:s0`，SELinux permissive）；退出 shell 后 root 即消失（无持久 root）。
+
+在该 root shell 里想加载 KernelSU 时，直接运行 ghostlock54 释放的脚本：
+
+```sh
+sh /data/local/tmp/kernelsu.sh            # 默认加载 /data/local/tmp/kernelsu.ko
+sh /data/local/tmp/kernelsu.sh /path/to/kernelsu.ko
+```
+
+脚本每次启动 ghostlock54 时都会重新写入 /data/local/tmp/kernelsu.sh（存在则覆盖）。
 
 防内核崩溃提示
 
@@ -228,6 +238,7 @@ kernelsu/ 目录下的源代码派生自 KernelSU，按 GPL-2.0 分发，与主�
 
 · KernelSU 加载逻辑集成进 ghostlock54（不再需要 sh 脚本）：exploit 自动解析 kln、insmod，结束后提示手动打开 KernelSU Manager；新增 -m/--module 与 -h/--help 参数。
 · 新增 `-s/--shell`：只开 root shell（保持 u:r:kernel:s0，不 setcon），不加载 KernelSU；默认模式加载模块并提示打开 Manager。
+· 新增 kernelsu.sh 释放：ghostlock54 每次启动时把内嵌的加载脚本写到 /data/local/tmp/kernelsu.sh（已存在则覆盖），方便在 `-s` 的 root shell 里手动加载模块。
 · 文件路径统一到 /data/local/tmp/ 根目录：ghostlock54、kernelsu.ko 两个文件都放 /data/local/tmp/ 下，不再使用 /data/local/tmp/kernelsu/ 子目录。
 · 删除 write_value(child_task + 0x8d0, 0)：adb shell 场景下子进程 seccomp.mode 本来就是 0，该写为空操作。写入次数由 5 次降到 4 次，减少一次 PI 竞态失败点，成功率由约 80% 提升。若在 App 进程内跑（父进程带 seccomp filter），需要把这步加回。
 · log_context 保留：攻击前后打印进程上下文（纯文件 IO，读 /proc/self/attr/current）。

