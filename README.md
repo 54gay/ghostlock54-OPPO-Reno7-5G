@@ -76,6 +76,11 @@ adb shell chmod 644 /data/local/tmp/kernelsu.ko
 ```
 
 kernelsu.ko 路径默认 /data/local/tmp/kernelsu.ko，可用 -m/--module 指定其它位置。
+`-s/--shell` 只开一个 root shell，**不加载 KernelSU**（适合临时执行一次 root 命令）：
+
+```sh
+adb shell -t /data/local/tmp/ghostlock54 -s
+```
 
 启动漏洞利用：
 
@@ -215,8 +220,8 @@ KernelSU 集成
 
 流程：
 
-1. 运行 ghostlock54（可加 -m/--module 指定其它 ko 路径，-h/--help 查看帮助）
-2. exploit 提权成功后自动解析 kallsyms_lookup_name、insmod 模块、杀掉并重启 KernelSU Manager
+1. 运行 ghostlock54（可加 -m/--module 指定其它 ko 路径；-s/--shell 只开 root shell 不加载 KSU；-h/--help 查看帮助）
+2. exploit 提权成功后自动解析 kallsyms_lookup_name、insmod 模块，完成后提示手动打开 KernelSU Manager
 3. 在 Manager 里给需要的 app 授权；之后任意已授权 app 的终端里 su 即可得到 u:r:ksu:s0 的 root shell
 
 模块是 runtime 加载（late-load），不修改 boot.img / 任何分区；重启后重新跑一次 ghostlock54 即可。

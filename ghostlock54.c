@@ -595,6 +595,7 @@ static int write_value(uint64_t target, uint64_t value) {
 
 static char g_module_path[256] = "/data/local/tmp/kernelsu.ko";
 static int g_leak_only;
+static int g_shell_mode;
 
 static int ksu_read_text(const char *path, char *buf, size_t cap) {
   int fd = open(path, O_RDONLY | O_CLOEXEC);
@@ -720,6 +721,7 @@ static void usage(const char *prog) {
           "  -h, --help          Show this help\n"
           "\n"
           "Special:\n"
+          "  -s, --shell         Root shell only (do NOT load KernelSU)\n"
           "  --leak-only         Only run the KASLR/leak verification (no writes)\n"
           "  --leak-y-only       Only verify the Y task leak (no exploitation)\n",
           prog);
@@ -743,6 +745,8 @@ int main(int argc, char **argv) {
       }
       snprintf(g_module_path, sizeof(g_module_path), "%s", argv[++i]);
       module_given = 1;
+    } else if (strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "--shell") == 0) {
+      g_shell_mode = 1;
     } else if (strcmp(argv[i], "--leak-only") == 0) {
       g_leak_only = 1;
     } else if (strcmp(argv[i], "--leak-y-only") == 0) {
@@ -893,11 +897,21 @@ int main(int argc, char **argv) {
     }
     /* -------------------------------------- */
 
-    pr_success("[CHILD] Running root action. Loading KernelSU...\n");
-
     dup2(__orig_stdout, STDOUT_FILENO);
     dup2(__orig_stdout, STDERR_FILENO);
     signal(SIGHUP, SIG_IGN);
+
+    if (g_shell_mode) {
+      pr_success("[CHILD] root shell (KernelSU NOT loaded). Type 'exit' to leave.\n");
+      fflush(stdout);
+      setenv("PATH", "/sbin:/system/sbin:/system/bin:/system/xbin", 1);
+      execl("/system/bin/sh", "sh", "-i", (char *)NULL);
+      execl("/system/bin/toybox", "toybox", "sh", "-i", (char *)NULL);
+      pr_warning("[CHILD] exec shell failed: %s\n", strerror(errno));
+      _exit(1);
+    }
+
+    pr_success("[CHILD] Running root action. Loading KernelSU...\n");
 
     if (ksu_module_loaded()) {
       pr_success("[KSU] kernelsu already loaded, nothing to do\n");
@@ -949,6 +963,11 @@ int main(int argc, char **argv) {
       pr_warning("[PARENT] child exited abnormally: status=0x%x\n", cstatus);
   }
   fflush(stdout);
+
+  if (g_shell_mode) {
+      /* root shell 是前台的，等它退出即可 */
+      _exit(0);
+  }
 
   /* 2) daemonize：原进程退出，让 adb shell 拿回提示符 */
   pid_t dpid = fork();
