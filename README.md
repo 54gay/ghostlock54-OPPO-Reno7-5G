@@ -47,18 +47,13 @@ sh /data/local/tmp/kernelsu.sh /path/to/kernelsu.ko
 
 编译
 
-不需要额外库（仅依赖 libc/libpthread）。kernelsu.ko 以目标文件形式链接进二进制：
+一条命令搞定（make 会先编模块、拷贝到 kernelsu/kernelsu.ko，再把它链接进 ghostlock54）：
 
 ```sh
-# 1) 把 kernelsu.ko 转成可直接链接的对象
-cp kernelsu/kernelsu.ko ./kernelsu.ko
-llvm-objcopy -I binary -O elf64-littleaarch64 -B aarch64 kernelsu.ko kernelsu_ko.o
-
-# 2) 编译并链接（生成单文件 ghostlock54，内嵌 ko）
-clang -O2 -pthread ghostlock54.c kernelsu_ko.o -o ghostlock54
-
-# 3) 清理中间文件
-rm -f kernelsu_ko.o kernelsu.ko
+make            # 默认 STRIP=1：内嵌前去掉 ko 的调试段（约 325KB，二进制约 360KB）
+make STRIP=0    # 保留完整 ko（约 5.7MB，二进制约 5.8MB）
+make module     # 只编模块并拷贝到 kernelsu/kernelsu.ko
+make clean
 ```
 
 
