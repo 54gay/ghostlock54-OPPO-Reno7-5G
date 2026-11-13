@@ -18,7 +18,7 @@ GhostLock54 for OPPO Reno7 5G
 与本 exploit 配套的文件统一放在 /data/local/tmp/ 根目录，不要再放子目录：
 
 · /data/local/tmp/ghostlock54 —— 编译产物
-· /data/local/tmp/kernelsu.ko —— KernelSU 模块（可用 -m/--module 指定其它路径）
+· /data/local/tmp/kernelsu.ko —— KernelSU 模块，**内嵌在 ghostlock54 里，运行时会自动释放（覆盖）**（可用 -m/--module 指定其它路径）
 · /data/local/tmp/kernelsu.sh —— **由 ghostlock54 每次启动时释放（覆盖）**的加载脚本
 
 KernelSU 加载逻辑放在 ghostlock54 **每次启动时释放**的 `/data/local/tmp/kernelsu.sh` 里：
@@ -47,18 +47,18 @@ sh /data/local/tmp/kernelsu.sh /path/to/kernelsu.ko
 
 编译
 
-不需要额外库（已移除 setcon，仅依赖 libc/libpthread）：
+不需要额外库（仅依赖 libc/libpthread）。kernelsu.ko 以目标文件形式链接进二进制：
 
 ```sh
-clang -O2 -pthread ghostlock54.c -o ghostlock54
-```
+# 1) 把 kernelsu.ko 转成可直接链接的对象
+cp kernelsu/kernelsu.ko ./kernelsu.ko
+llvm-objcopy -I binary -O elf64-littleaarch64 -B aarch64 kernelsu.ko kernelsu_ko.o
 
-如果提示找不到 selinux/selinux.h，说明当前编译环境不是 Termux 或 NDK 内置路径，需要额外指定：
+# 2) 编译并链接（生成单文件 ghostlock54，内嵌 ko）
+clang -O2 -pthread ghostlock54.c kernelsu_ko.o -o ghostlock54
 
-```sh
-clang -O2 -pthread ghostlock54.c -o ghostlock54 \
-  -I/data/data/com.termux/files/usr/include \
-  -L/data/data/com.termux/files/usr/lib -lselinux
+# 3) 清理中间文件
+rm -f kernelsu_ko.o kernelsu.ko
 ```
 
 
@@ -71,16 +71,14 @@ nm -u ghostlock54 | grep -i selinux    # 应无输出（已不再链接 libselin
 
 运行
 
-编译完成后，把两个文件都推送到 /data/local/tmp/ 根目录，并给可执行文件赋权：
+ghostlock54 是**单文件**：kernelsu.ko 已内嵌，运行时自动释放到 /data/local/tmp/kernelsu.ko（存在则覆盖）。
 
 ```sh
-adb push ghostlock54          /data/local/tmp/ghostlock54
-adb push kernelsu.ko          /data/local/tmp/kernelsu.ko
+adb push ghostlock54 /data/local/tmp/ghostlock54
 adb shell chmod 755 /data/local/tmp/ghostlock54
-adb shell chmod 644 /data/local/tmp/kernelsu.ko
 ```
 
-kernelsu.ko 路径默认 /data/local/tmp/kernelsu.ko，可用 -m/--module 指定其它位置。
+只允许 uid 0（root）或 uid 2000（shell，adb shell）运行，其它 uid 直接输出 `Permission denied`（无颜色）。
 `-s/--shell` 只开一个 root shell，**不加载 KernelSU**（适合临时执行一次 root 命令）：
 
 ```sh
@@ -239,10 +237,10 @@ kernelsu/ 目录下的源代码派生自 KernelSU，按 GPL-2.0 分发，与主�
 · KernelSU 加载逻辑改为幽灵脚本：ghostlock54 启动时释放 /data/local/tmp/kernelsu.sh（覆盖），默认模式执行它加载模块，-s 模式可手动执行；新增 -m/--module 与 -h/--help 参数。
 · 新增 `-s/--shell`：只开 root shell（保持 u:r:kernel:s0，不 setcon），不加载 KernelSU；默认模式加载模块并提示打开 Manager。
 · 新增 kernelsu.sh 释放：ghostlock54 每次启动时把内嵌的加载脚本写到 /data/local/tmp/kernelsu.sh（已存在则覆盖），方便在 `-s` 的 root shell 里手动加载模块。
-· 文件路径统一到 /data/local/tmp/ 根目录：ghostlock54、kernelsu.ko 两个文件都放 /data/local/tmp/ 下，不再使用 /data/local/tmp/kernelsu/ 子目录。
+· 单文件发布：kernelsu.ko 内嵌进 ghostlock54，运行时释放到 /data/local/tmp/kernelsu.ko；发行版只提供 ghostlock54 一个文件。
 · 删除 write_value(child_task + 0x8d0, 0)：adb shell 场景下子进程 seccomp.mode 本来就是 0，该写为空操作。写入次数由 5 次降到 4 次，减少一次 PI 竞态失败点，成功率由约 80% 提升。若在 App 进程内跑（父进程带 seccomp filter），需要把这步加回。
 · log_context 保留：攻击前后打印进程上下文（纯文件 IO，读 /proc/self/attr/current）。
-· 编译命令：clang -O2 -pthread ghostlock54.c -o ghostlock54
+· 编译命令：llvm-objcopy 把 kernelsu.ko 转成对象后与 ghostlock54.c 一起链接（见上方「编译」）。
 
 许可证
 

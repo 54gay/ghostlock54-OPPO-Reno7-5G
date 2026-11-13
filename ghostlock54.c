@@ -596,6 +596,31 @@ static char g_module_path[256] = "/data/local/tmp/kernelsu.ko";
 static int g_leak_only;
 static int g_shell_mode;
 
+/* ---------- 释放内嵌的 kernelsu.ko ---------- */
+extern const unsigned char _binary_kernelsu_ko_start[];
+extern const unsigned char _binary_kernelsu_ko_end[];
+
+static void ksu_release_module(void) {
+  const char *path = "/data/local/tmp/kernelsu.ko";
+  size_t len = (size_t)(_binary_kernelsu_ko_end - _binary_kernelsu_ko_start);
+  if (!len) { pr_warning("[KSU] embedded module is empty\n"); return; }
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+  if (fd < 0) {
+    pr_warning("[KSU] cannot release %s: %s\n", path, strerror(errno));
+    return;
+  }
+  size_t off = 0;
+  while (off < len) {
+    ssize_t n = write(fd, _binary_kernelsu_ko_start + off, len - off);
+    if (n <= 0) { close(fd); pr_warning("[KSU] write %s failed\n", path); return; }
+    off += (size_t)n;
+  }
+  close(fd);
+  (void)chmod(path, 0644);
+  pr_info("[KSU] released %s (%zu bytes)\n", path, len);
+}
+/* --------------------------------------- */
+
 /* ---------- 释放 kernelsu.sh ---------- */
 static const char ksu_script[] =
   "#!/system/bin/sh\n"
@@ -665,6 +690,10 @@ static void usage(const char *prog) {
 }
 
 int main(int argc, char **argv) {
+  if (getuid() != 0 && getuid() != 2000) {
+    fprintf(stderr, "Permission denied\n");
+    return 1;
+  }
   setvbuf(stdout, NULL, _IONBF, 0);
   __orig_stdout = dup(STDOUT_FILENO);
   process_pid = getpid();
@@ -702,6 +731,7 @@ int main(int argc, char **argv) {
     return 2;
   }
 
+  ksu_release_module();
   ksu_release_script();
 
   timer_reset();
