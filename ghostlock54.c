@@ -902,9 +902,8 @@ int main(int argc, char **argv) {
       pr_success("[CHILD] root shell (KernelSU NOT loaded). Type 'exit' to leave.\n");
       fflush(stdout);
       setenv("PATH", "/sbin:/system/sbin:/system/bin:/system/xbin", 1);
-      execl("/system/bin/sh", "sh", "-i", (char *)NULL);
-      execl("/system/bin/toybox", "toybox", "sh", "-i", (char *)NULL);
-      pr_warning("[CHILD] exec shell failed: %s\n", strerror(errno));
+      execl("/system/bin/sh", "sh", (char *)NULL);
+      pr_warning("[CHILD] exec /system/bin/sh failed: %s\n", strerror(errno));
       _exit(1);
     }
 
