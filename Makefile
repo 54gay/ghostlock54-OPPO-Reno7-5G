@@ -1,13 +1,13 @@
 # Build kernelsu.ko and ghostlock54 (single file, ko embedded)
 #
-# All intermediate artifacts live in build/:
-#   build/kernelsu.full.ko  - module as built (debug info kept)
-#   build/kernelsu.ko       - copy embedded into ghostlock54 (stripped by default)
+# All artifacts live in build/ (no big copies: the full module is a symlink):
+#   build/kernelsu.full.ko  - symlink -> kernelsu/src/kernel/kernelsu.ko
+#   build/kernelsu.ko       - embedded copy: stripped (STRIP=1) or symlink (STRIP=0)
 #   build/kernelsu_ko.o     - objcopy'd object linked into the binary
 #
 #   make                 # build module + ghostlock54
 #   make STRIP=0         # keep debug info in the embedded ko (bigger binary)
-#   make module          # build module only -> build/kernelsu.ko
+#   make module          # build module only
 #   make clean
 
 KERNEL_DIR  ?= kernel
@@ -29,18 +29,17 @@ all: module $(BIN)
 module:
 	KERNEL_DIR=$(KERNEL_DIR) sh $(MODULE_SH)
 	@mkdir -p $(BUILD_DIR)
-	cp -f $(MOD_SRC_KO) $(KO_FULL)
-	cp -f $(MOD_SRC_KO) $(KO_EMBED)
-	@echo "[make] module -> $(KO_FULL)"
+	ln -sfn $(CURDIR)/$(MOD_SRC_KO) $(KO_FULL)
+	@echo "[make] module -> $(KO_FULL) (symlink)"
 
 $(BIN): ghostlock54.c module
 	@mkdir -p $(BUILD_DIR)
 	@if [ "$(STRIP)" = "1" ]; then \
-	  llvm-strip --strip-debug $(KO_EMBED); \
-	  echo "[make] embedded ko (stripped): $$(stat -c %s $(KO_EMBED)) bytes"; \
+	  llvm-strip --strip-debug -o $(KO_EMBED) $(KO_FULL); \
 	else \
-	  echo "[make] embedded ko: $$(stat -c %s $(KO_EMBED)) bytes"; \
+	  ln -sfn $(CURDIR)/$(KO_FULL) $(KO_EMBED); \
 	fi
+	@echo "[make] embedded ko: $$(stat -Lc %s $(KO_EMBED)) bytes"
 	cd $(BUILD_DIR) && llvm-objcopy -I binary -O elf64-littleaarch64 -B aarch64 kernelsu.ko kernelsu_ko.o
 	$(CC) $(CFLAGS) ghostlock54.c $(KO_OBJ) -o $(BIN)
 	@echo "[make] built: $(BIN) ($$(stat -c %s $(BIN)) bytes)"
