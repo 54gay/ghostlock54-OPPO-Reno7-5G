@@ -889,7 +889,8 @@ int main(int argc, char **argv) {
         ssize_t n = read(f, ctx, sizeof(ctx) - 1);
         close(f);
         if (n > 0) ctx[n] = 0;
-        pr_success("[CHILD] context: %s", ctx);
+        for (int k = (int)strlen(ctx) - 1; k >= 0 && (ctx[k] == '\n' || ctx[k] == '\r'); k--) ctx[k] = 0;
+        pr_success("[CHILD] context: %s\n", ctx);
       }
     }
 
