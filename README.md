@@ -28,17 +28,16 @@ KernelSU Manager。
 
 「原地弹出 # shell」功能停止更新。
 
-从当前版本起，exploit 不再继续维护「提权完成后直接在当前终端原地弹出 root shell」这一路径。原因：
+当前版本有两种模式：
 
-· 原地弹 shell 依赖主进程原地挂起保活，退出 shell 后内核 PI 引用仍在，只能靠重启清理；
-· KernelSU 路线（late-load kernelsu.ko）已经能提供常驻、可管理的 root，没必要在 exploit 里再养一个挂起主进程；
-· 原地 shell 与 KernelSU 的 u:r:ksu:s0 域在同一台设备上并存时，SELinux 域切换和 su 分叉容易互相踩。
+· **默认**：加载 KernelSU（late-load kernelsu.ko），完成后提示手动打开 Manager，root shell 由 KernelSU 提供（u:r:ksu:s0）；
+· **`-s/--shell`**：只拿 root shell，**不加载 KernelSU**，适合临时执行一次 root 命令。
 
-如果你确实需要「原地弹出 # shell」这个行为，请使用发行版 v5.0 及以下。 v5.0 及以下的 tag / release 里保留了完整实现（含 setcon("u:r:shell:s0") 与原地 # 提示符），当前版本不再保证该路径可用。v5.0 之后的版本以 KernelSU 集成为主路径，见下方「KernelSU 集成」。
+说明：`-s` 模式下终端里会直接出现 `#` 提示符，exploit 自身 `setcon("u:r:shell:s0")`；退出 shell 后 root 即消失（无持久 root）。默认模式不 setcon，交给 KernelSU。
 
 防内核崩溃提示
 
-由于漏洞利用后必须保持主进程存活以防内核悬挂指针引发崩溃（Kernel Panic），父进程会原地进入死循环挂起（v5.0 及以下含原地 shell 的版本；当前版本走 KernelSU 路径，主进程同样保活，但不再承载交互 shell）。此时如果你想彻底结束程序，直接按电源键重启手机即可。
+由于漏洞利用后必须保持主进程存活以防内核悬挂指针引发崩溃（Kernel Panic），默认模式下父进程会 daemonize 并原地挂起保活（不承载交互 shell）；`-s` 模式下父进程等待 root shell 退出后正常结束。如果想彻底清理状态，直接按电源键重启手机即可。
 
 编译
 
@@ -92,8 +91,8 @@ adb shell -t /data/local/tmp/ghostlock54 -m /path/to/kernelsu.ko
 adb shell -t /data/local/tmp/ghostlock54 -h
 ```
 
-· v5.0 及以下：程序跑完后，终端会直接变成 # 提示符，此时你已获得 Root 权限，可以直接执行 id / getenforce / cat /proc/self/attr/current。
-· 当前版本：不再原地弹 #。exploit 只负责拿到内核任意写、把 cred 换成 init_cred、切 permissive、清 seccomp，然后自动解析 kallsyms_lookup_name、insmod 模块（默认 /data/local/tmp/kernelsu.ko）、杀掉并重启 KernelSU Manager；之后用 Manager 授权 app，在 app 终端里 su 拿 u:r:ksu:s0 的 root shell。
+· `-s/--shell`：程序跑完后，终端会直接变成 # 提示符（uid=0，全 cap，context u:r:shell:s0），可以直接执行 id / getenforce / cat /proc/self/attr/current；**不加载 KernelSU**，exit 后 root 消失。
+· 默认：不弹 #。exploit 拿到内核任意写、把 cred 换成 init_cred、切 permissive，然后自动解析 kallsyms_lookup_name、insmod 模块（默认 /data/local/tmp/kernelsu.ko），完成后提示手动打开 KernelSU Manager；之后用 Manager 授权 app，在 app 终端里 su 拿 u:r:ksu:s0 的 root shell。
 
 程序输出示例（child 阶段）：
 
@@ -111,7 +110,7 @@ adb shell -t /data/local/tmp/ghostlock54 -h
 [*] parent post-exploit: u:r:untrusted_app:s0:c...
 ```
 
-/proc/self/status 示例（v5.0 及以下 root shell 内）：
+/proc/self/status 示例（`-s` root shell 内）：
 
 ```
 Uid:    0       0       0       0
@@ -125,18 +124,18 @@ Seccomp:        0
 
 CapEff 为 0x3fffffffff，即 bit 0..37 全 1，共 38 位，对应 Linux 5.4 内核已知的全部 capability（CAP_LAST_CAP = 37，CAP_AUDIT_READ）。这是因为 cred 指针被整体替换为 init_cred，而非逐位写入 cap 位图。init_cred 自带完整 cap 集合，且 user_ns 指向 init_user_ns，不受 SECURE_NOROOT 等 securebits 影响。
 
-关于 SELinux 域（v5.0 及以下有效）
+关于 SELinux 域（`-s` 模式）
 
 exploit 完成后，子进程 uid 是 0、CapEff 全满、Seccomp 清零，SELinux context 初始是 u:r:kernel:s0——因为 cred 被整体替换为 init_cred，而 init_cred->security 绑定的就是 kernel 域的 sid。
 
-v5.0 及以下的版本会在提权完成后调用 setcon("u:r:shell:s0") 切到 shell 域，理由：
+`-s/--shell` 模式会在提权完成后调用 setcon("u:r:shell:s0") 切到 shell 域，理由：
 
 · KernelSU 模块默认开启 SELinux 强制模式（setenforce 1）。在强制模式下，u:r:kernel:s0 的 shell 无法执行 /system/bin 下的命令（会被 SELinux 拒绝并终止），这样 ghostlock 给出的 # shell 就没法正常用了。
 · u:r:shell:s0 是 Android 的 shell 域，权限足够（能 exec /system/bin 命令、能加载内核模块、能读写 /data 等），强制模式下也能正常工作。
 · 切换是单向放宽：kernel → shell 允许；反向（无 root 的 shell 域切回 kernel 域）不允许。只有拿全 cap 的 kernel 域 root 才能自由 setcon 到任意放宽的目标域。
 · 切换依赖 libselinux（编译需 -lselinux）。
 
-当前版本已停止更新「原地弹 shell + setcon 到 shell 域」这一整套路径，该逻辑保留在 v5.0 及以下。当前版本以 KernelSU late-load 为主路径，root shell 由 KernelSU 提供 u:r:ksu:s0，不再由 exploit 自己 setcon。
+默认模式（不加 `-s`）不做 setcon，直接加载 KernelSU，root shell 由 KernelSU 提供 u:r:ksu:s0，exploit 自己不上 shell。
 
 实现要点
 
@@ -235,7 +234,7 @@ kernelsu/ 目录下的源代码派生自 KernelSU，按 GPL-2.0 分发，与主�
 变更说明（相对上一版）
 
 · KernelSU 加载逻辑集成进 ghostlock54（不再需要 sh 脚本）：exploit 自动解析 kln、insmod，结束后提示手动打开 KernelSU Manager；新增 -m/--module 与 -h/--help 参数。
-· 停止更新「原地弹出 # shell」功能：需要该功能的用户请使用发行版 v5.0 及以下。
+· 新增 `-s/--shell`：只开 root shell（setcon 到 u:r:shell:s0），不加载 KernelSU；默认模式加载模块并提示打开 Manager。
 · 文件路径统一到 /data/local/tmp/ 根目录：ghostlock54、kernelsu.ko 两个文件都放 /data/local/tmp/ 下，不再使用 /data/local/tmp/kernelsu/ 子目录。
 · 删除 write_value(child_task + 0x8d0, 0)：adb shell 场景下子进程 seccomp.mode 本来就是 0，该写为空操作。写入次数由 5 次降到 4 次，减少一次 PI 竞态失败点，成功率由约 80% 提升。若在 App 进程内跑（父进程带 seccomp filter），需要把这步加回。
 · log_context 保留：攻击前后打印进程上下文（纯文件 IO，读 /proc/self/attr/current）。

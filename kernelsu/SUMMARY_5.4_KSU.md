@@ -38,15 +38,15 @@
   adb shell -t /data/local/tmp/ghostlock54
   ```
 
-- **v5.0 及以下**：`ghostlock54` 会原地弹出 `#` shell（并 `setcon` 到 `u:r:shell:s0`），
-  你需要在那个 root shell 里手动执行：
+- **`-s/--shell`**：`ghostlock54` 会原地弹出 `#` shell（并 `setcon` 到 `u:r:shell:s0`），
+  但该模式**不加载 KernelSU**；要在 root shell 里手动加载模块，可在该 shell 内执行：
 
   ```sh
-  sh /data/local/tmp/load_ksu_54.sh
+  insmod /data/local/tmp/kernelsu.ko kln=0x... level=3
   ```
 
-> 「原地弹出 # shell」功能已停止更新，保留在发行版 v5.0 及以下。
-> 当前版本以 KernelSU late-load 为主路径。
+> 需要 exploit 自带 root shell（不加载 KernelSU）时用 `ghostlock54 -s/--shell`；
+> 默认模式以 KernelSU late-load 为主路径。
 
 脚本行为（两个版本共用同一个 `load_ksu_54.sh`）：
 1. 检查 `/data/local/tmp/kernelsu.ko`（**根目录**），不存在则提示放置位置并退出（exit 1）
@@ -56,8 +56,8 @@
 4. 最后强制停止并重新启动 KernelSU Manager（`am force-stop` + `am start`），
    让 Manager 拿到新模块的驱动 fd
 
-模块是运行时加载，**重启后需重新加载**（当前版本重新跑 `ghostlock54`，
-v5.0 及以下重新拿 `#` shell 后执行脚本）。
+模块是运行时加载，**重启后需重新加载**（重新跑 `ghostlock54` 即可；
+或 `ghostlock54 -s` 进 root shell 后手动 insmod）。
 
 ## 已验证功能
 
@@ -139,10 +139,10 @@ ColorOS 在 kernel 里内置了提权检测，检测到 app uid → 0 会直接�
   `insmod /data/local/tmp/kernelsu.ko kln=0x... level=3 permissive=1`
 - 注意：SELinux 强制模式下，**`u:r:kernel:s0` 的 shell 不能执行 /system/bin
   下的命令**（会被拒绝并终止）。规避方式：
-  - **当前版本**：不依赖 exploit 原地 shell，直接用 KernelSU 的 `su`
+  - **默认模式**：不依赖 exploit 原地 shell，直接用 KernelSU 的 `su`
     拿 `u:r:ksu:s0` shell；
-  - **v5.0 及以下**：exploit 会 `setcon("u:r:shell:s0")`，或手动
-    `runcon u:r:shell:s0 sh 脚本`，或加载时用 `permissive=1`。
+  - **`-s/--shell`**：exploit 会 `setcon("u:r:shell:s0")` 并给出 root shell
+    （不加载模块），或手动 `runcon u:r:shell:s0 sh 脚本`，或加载时用 `permissive=1`。
 
 ## 危险操作记录（勿踩）
 

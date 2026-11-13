@@ -57,8 +57,8 @@ KernelSU 加载逻辑已集成进 `ghostlock54` 本体，**不再需要任何 sh
   ```
 
 - 强制模式下，`u:r:kernel:s0` 的 shell 不能执行 `/system/bin` 下的命令（会被拒绝终止）。规避方式：
-  - **当前版本**：不依赖 exploit 原地 shell，直接用 KernelSU 的 `su` 拿 `u:r:ksu:s0`；
-  - **v5.0 及以下**：exploit 会 `setcon("u:r:shell:s0")`，或手动 `runcon u:r:shell:s0 sh 脚本`，或 `permissive=1` 加载模块。
+  - **默认模式**：不依赖 exploit 原地 shell，直接用 KernelSU 的 `su` 拿 `u:r:ksu:s0`；
+  - **`-s/--shell`**：exploit 会 `setcon("u:r:shell:s0")` 并直接起 root shell（不加载模块），或手动 `runcon u:r:shell:s0 sh 脚本`，或 `permissive=1` 加载模块。
 
 ## 关键实现（详见 SUMMARY_5.4_KSU.md）
 
