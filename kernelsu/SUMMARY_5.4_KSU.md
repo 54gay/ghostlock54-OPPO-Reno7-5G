@@ -22,7 +22,7 @@
 | 文件 | 说明 |
 |---|---|
 | `kernelsu.ko` | 预编译模块（KSU_VERSION 32680，uapi 5），放 `/data/local/tmp/` |
-| （无脚本） | 加载逻辑已集成进 ghostlock54 本体，不再需要脚本 |
+| `/data/local/tmp/kernelsu.sh` | ghostlock54 启动时释放（覆盖），默认模式执行它加载模块，`-s` 可手动执行 |
 | `SUMMARY_5.4_KSU.md` | 本文件，移植全过程与踩坑记录 |
 | `src/` | 模块源码（派生自 KernelSU，GPL-2.0） |
 | `build.sh` | 交叉编译脚本（需要配套内核源码树） |
@@ -48,7 +48,7 @@
 > 需要 exploit 自带 root shell（不加载 KernelSU）时用 `ghostlock54 -s/--shell`；
 > 默认模式以 KernelSU late-load 为主路径。
 
-加载行为（内建于 `ghostlock54`）：
+加载行为（`kernelsu.sh`，由 `ghostlock54` 释放）：
 1. 检查 `/data/local/tmp/kernelsu.ko`（**根目录**），不存在则提示放置位置并退出（exit 1）
 2. 模块已加载 → 跳过（不卸载、不杀进程）
 3. 否则在 `kptr_restrict=1`（普通用户读不到 /proc/kallsyms、root 可读）下流式解析

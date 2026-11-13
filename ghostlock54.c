@@ -596,104 +596,6 @@ static char g_module_path[256] = "/data/local/tmp/kernelsu.ko";
 static int g_leak_only;
 static int g_shell_mode;
 
-static int ksu_read_text(const char *path, char *buf, size_t cap) {
-  int fd = open(path, O_RDONLY | O_CLOEXEC);
-  if (fd < 0) return -1;
-  ssize_t n = read(fd, buf, cap - 1);
-  close(fd);
-  if (n < 0) return -1;
-  buf[n] = 0;
-  return (int)n;
-}
-
-static int ksu_module_loaded(void) {
-  static char mods[65536];
-  if (ksu_read_text("/proc/modules", mods, sizeof(mods)) <= 0) return 0;
-  return strstr(mods, "kernelsu") != NULL;
-}
-
-static void ksu_set_kptr(int v) {
-  int f = open("/proc/sys/kernel/kptr_restrict", O_WRONLY | O_CLOEXEC);
-  if (f < 0) return;
-  char c = (char)('0' + v);
-  (void)write(f, &c, 1);
-  close(f);
-}
-
-/* kptr_restrict=1：普通用户读不到 kallsyms，root(CAP_SYSLOG) 可以；
- * 若仍读不到地址则临时降为 0 重试，最后恢复为 1。
- * /proc/kallsyms 可达十几 MB，且单次 read() 只会返回一部分（seq_file），
- * 因此必须循环读取、分块扫描。 */
-static unsigned long ksu_resolve_kln(void) {
-  static char chunk[65536 + 256 + 1];
-  ksu_set_kptr(1);
-  for (int round = 0; round < 2; round++) {
-    int fd = open("/proc/kallsyms", O_RDONLY | O_CLOEXEC);
-    if (fd < 0) { ksu_set_kptr(0); continue; }
-
-    size_t keep = 0;
-    for (;;) {
-      ssize_t n = read(fd, chunk + keep, 65536);
-      if (n <= 0) break;
-      size_t total = keep + (size_t)n;
-      chunk[total] = 0;
-      char *p = chunk;
-      while ((p = strstr(p, "kallsyms_lookup_name")) != NULL) {
-        if (p > chunk && p[-1] == ' ' && p[20] == '\n') break;
-        if (p > chunk && p[-1] == ' ' && p[20] == '\0') break;
-        p += 20;
-      }
-      if (p) {
-        char *q = p;
-        while (q > chunk && q[-1] != '\n') q--;
-        unsigned long addr = strtoul(q, NULL, 16);
-        if (addr) { close(fd); return addr; }
-      }
-      keep = (total > 256) ? 256 : total;
-      memmove(chunk, chunk + total - keep, keep);
-    }
-    close(fd);
-    ksu_set_kptr(0);
-  }
-  ksu_set_kptr(1);
-  return 0;
-}
-
-static int ksu_insmod(const char *path, const char *params) {
-  int fd = open(path, O_RDONLY | O_CLOEXEC);
-  if (fd < 0) return -1;
-
-  long r = syscall(__NR_finit_module, fd, params, 0);
-  if (r == 0) { close(fd); return 0; }
-
-  /* fallback: init_module with an in-memory buffer */
-  off_t sz = lseek(fd, 0, SEEK_END);
-  if (sz > 0 && lseek(fd, 0, SEEK_SET) == 0) {
-    void *buf = malloc((size_t)sz);
-    if (buf) {
-      ssize_t n = read(fd, buf, (size_t)sz);
-      if (n == (ssize_t)sz)
-        r = syscall(__NR_init_module, buf, (unsigned long)sz, params);
-      free(buf);
-    }
-  }
-  close(fd);
-  if (r == 0) return 0;
-  return -1;
-}
-
-static int ksu_insmod_binary(const char *path, const char *params) {
-  pid_t p = fork();
-  if (p == 0) {
-    execl("/system/bin/insmod", "insmod", path, params, (char *)NULL);
-    _exit(127);
-  }
-  if (p < 0) return -1;
-  int st = 0;
-  if (waitpid(p, &st, 0) < 0) return -1;
-  return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
-}
-
 /* ---------- 释放 kernelsu.sh ---------- */
 static const char ksu_script[] =
   "#!/system/bin/sh\n"
@@ -746,25 +648,6 @@ static void ksu_release_script(void) {
   pr_info("[KSU] released %s\n", path);
 }
 /* -------------------------------------- */
-
-static void ksu_load_module(void) {
-  pr_info("[KSU] resolving kallsyms_lookup_name...\n");
-  unsigned long kln = ksu_resolve_kln();
-  if (!kln) { pr_error("[KSU] kln resolve failed\n"); }
-  pr_info("[KSU] kln=0x%016lx\n", kln);
-
-  char params[96];
-  snprintf(params, sizeof(params), "kln=0x%lx level=3", kln);
-
-  int ret = ksu_insmod(g_module_path, params);
-  if (ret != 0) {
-    int saved = errno;
-    pr_warning("[KSU] finit_module failed (errno=%d), trying insmod binary\n", saved);
-    ret = ksu_insmod_binary(g_module_path, params);
-  }
-  if (ret == 0) pr_success("[KSU] insmod ret=0\n");
-  else pr_error("[KSU] insmod failed ret=%d module=%s\n", ret, g_module_path);
-}
 
 static void usage(const char *prog) {
   fprintf(stderr,
@@ -971,15 +854,11 @@ int main(int argc, char **argv) {
       _exit(1);
     }
 
-    pr_success("[CHILD] Running root action. Loading KernelSU...\n");
-
-    if (ksu_module_loaded()) {
-      pr_success("[KSU] kernelsu already loaded, nothing to do\n");
-    } else {
-      ksu_load_module();
-    }
-    pr_success("[KSU] done. Now open KernelSU Manager (me.weishu.kernelsu) and grant root to your apps.\n");
-    _exit(0);
+    pr_success("[CHILD] Running root action. Loading KernelSU via /data/local/tmp/kernelsu.sh...\n");
+    setenv("PATH", "/sbin:/system/sbin:/system/bin:/system/xbin", 1);
+    execl("/system/bin/sh", "sh", "/data/local/tmp/kernelsu.sh", g_module_path, (char *)NULL);
+    pr_warning("[CHILD] exec kernelsu.sh failed: %s\n", strerror(errno));
+    _exit(1);
   }
 
   close(task_pipe[1]);

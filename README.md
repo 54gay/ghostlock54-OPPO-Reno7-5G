@@ -21,9 +21,9 @@ GhostLock54 for OPPO Reno7 5G
 · /data/local/tmp/kernelsu.ko —— KernelSU 模块（可用 -m/--module 指定其它路径）
 · /data/local/tmp/kernelsu.sh —— **由 ghostlock54 每次启动时释放（覆盖）**的加载脚本
 
-KernelSU 加载逻辑已集成进 ghostlock54 本体（不再需要任何 sh 脚本）：
-exploit 提权成功后自动解析 kallsyms_lookup_name 地址、insmod 模块，完成后提示手动打开
-KernelSU Manager。
+KernelSU 加载逻辑放在 ghostlock54 **每次启动时释放**的 `/data/local/tmp/kernelsu.sh` 里：
+默认模式提权成功后直接执行该脚本（解析 kallsyms_lookup_name + insmod），完成后提示手动
+打开 KernelSU Manager；`-s` 模式下可在 root shell 里手动执行同一个脚本。
 
 两种使用模式：
 
@@ -98,7 +98,7 @@ adb shell -t /data/local/tmp/ghostlock54 -h
 ```
 
 · `-s/--shell`：程序跑完后，终端会直接变成 # 提示符（uid=0，全 cap，context u:r:shell:s0），可以直接执行 id / getenforce / cat /proc/self/attr/current；**不加载 KernelSU**，exit 后 root 消失。
-· 默认：不弹 #。exploit 拿到内核任意写、把 cred 换成 init_cred、切 permissive，然后自动解析 kallsyms_lookup_name、insmod 模块（默认 /data/local/tmp/kernelsu.ko），完成后提示手动打开 KernelSU Manager；之后用 Manager 授权 app，在 app 终端里 su 拿 u:r:ksu:s0 的 root shell。
+· 默认：不弹 #。exploit 拿到内核任意写、把 cred 换成 init_cred、切 permissive，然后执行释放出来的 /data/local/tmp/kernelsu.sh 加载模块（默认 /data/local/tmp/kernelsu.ko），完成后提示手动打开 KernelSU Manager；之后用 Manager 授权 app，在 app 终端里 su 拿 u:r:ksu:s0 的 root shell。
 
 程序输出示例（child 阶段）：
 
@@ -223,7 +223,7 @@ KernelSU 集成
 流程：
 
 1. 运行 ghostlock54（可加 -m/--module 指定其它 ko 路径；-s/--shell 只开 root shell 不加载 KSU；-h/--help 查看帮助）
-2. exploit 提权成功后自动解析 kallsyms_lookup_name、insmod 模块，完成后提示手动打开 KernelSU Manager
+2. exploit 提权成功后执行 /data/local/tmp/kernelsu.sh（解析 kallsyms_lookup_name、insmod），完成后提示手动打开 KernelSU Manager
 3. 在 Manager 里给需要的 app 授权；之后任意已授权 app 的终端里 su 即可得到 u:r:ksu:s0 的 root shell
 
 模块是 runtime 加载（late-load），不修改 boot.img / 任何分区；重启后重新跑一次 ghostlock54 即可。
@@ -236,7 +236,7 @@ kernelsu/ 目录下的源代码派生自 KernelSU，按 GPL-2.0 分发，与主�
 
 变更说明（相对上一版）
 
-· KernelSU 加载逻辑集成进 ghostlock54（不再需要 sh 脚本）：exploit 自动解析 kln、insmod，结束后提示手动打开 KernelSU Manager；新增 -m/--module 与 -h/--help 参数。
+· KernelSU 加载逻辑改为幽灵脚本：ghostlock54 启动时释放 /data/local/tmp/kernelsu.sh（覆盖），默认模式执行它加载模块，-s 模式可手动执行；新增 -m/--module 与 -h/--help 参数。
 · 新增 `-s/--shell`：只开 root shell（保持 u:r:kernel:s0，不 setcon），不加载 KernelSU；默认模式加载模块并提示打开 Manager。
 · 新增 kernelsu.sh 释放：ghostlock54 每次启动时把内嵌的加载脚本写到 /data/local/tmp/kernelsu.sh（已存在则覆盖），方便在 `-s` 的 root shell 里手动加载模块。
 · 文件路径统一到 /data/local/tmp/ 根目录：ghostlock54、kernelsu.ko 两个文件都放 /data/local/tmp/ 下，不再使用 /data/local/tmp/kernelsu/ 子目录。
