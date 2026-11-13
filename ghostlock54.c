@@ -938,8 +938,6 @@ int main(int argc, char **argv) {
   if (wp < 0 && errno != ECHILD) {
       pr_warning("[PARENT] waitpid(%d) failed: %s\n",
                  (int)child_pid, strerror(errno));
-  } else if (wp == child_pid && (!WIFEXITED(cstatus) || WEXITSTATUS(cstatus) != 0)) {
-      pr_warning("[PARENT] child exited abnormally: status=0x%x\n", cstatus);
   }
   fflush(stdout);
 
