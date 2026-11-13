@@ -12,8 +12,8 @@
 /data/local/tmp/kernelsu.ko
 ```
 
-`ghostlock54` 里 `execl` 的脚本路径硬编码为 `/data/local/tmp/load_ksu_54.sh`，
-`load_ksu_54.sh` 里 `insmod` 的模块路径硬编码为 `/data/local/tmp/kernelsu.ko`。
+`ghostlock54` 内部直接解析 `kallsyms_lookup_name` 并加载
+`/data/local/tmp/kernelsu.ko`（默认路径，可用 `-m/--module` 覆盖）。
 旧文档里的 `/data/local/tmp/kernelsu/...` 子目录写法和 `/storage/emulated/0/Download/...`
 写法均已废弃。
 
@@ -29,8 +29,8 @@
 
 ## 每次开机后的加载流程
 
-- **当前版本**：直接跑 `ghostlock54`，exploit 提权成功后会**自动** `execl` 调用
-  `/data/local/tmp/load_ksu_54.sh`，你不需要手动拿 root shell、也不需要手动执行脚本。
+- **当前版本**：直接跑 `ghostlock54`，exploit 提权成功后**内部直接**加载模块，
+  你不需要手动拿 root shell、也不需要任何脚本。
   exploit 加载模块后提示手动打开 KernelSU Manager；在 Manager 里给需要的 app 授权，
   之后任意已授权 app 的终端里 `su` 即可得到 `u:r:ksu:s0` 的 root shell。
 
@@ -48,13 +48,12 @@
 > 需要 exploit 自带 root shell（不加载 KernelSU）时用 `ghostlock54 -s/--shell`；
 > 默认模式以 KernelSU late-load 为主路径。
 
-脚本行为（两个版本共用同一个 `load_ksu_54.sh`）：
+加载行为（内建于 `ghostlock54`）：
 1. 检查 `/data/local/tmp/kernelsu.ko`（**根目录**），不存在则提示放置位置并退出（exit 1）
-2. 模块已加载 → 直接退出（不卸载、不杀进程，exit 0）
-3. 否则在 `kptr_restrict=1`（普通用户读不到 /proc/kallsyms、root 可读）下解析
-   `kallsyms_lookup_name` 地址，传给模块的 `kln=` 参数后 `insmod`
-4. 最后强制停止并重新启动 KernelSU Manager（`am force-stop` + `am start`），
-   让 Manager 拿到新模块的驱动 fd
+2. 模块已加载 → 跳过（不卸载、不杀进程）
+3. 否则在 `kptr_restrict=1`（普通用户读不到 /proc/kallsyms、root 可读）下流式解析
+   `kallsyms_lookup_name` 地址，传给模块的 `kln=` 参数后 `finit_module`（失败回退 `init_module`）
+4. 加载完成后提示手动打开 KernelSU Manager，由 Manager 获取新模块的驱动 fd
 
 模块是运行时加载，**重启后需重新加载**（重新跑 `ghostlock54` 即可；
 或 `ghostlock54 -s` 进 root shell 后手动 insmod）。

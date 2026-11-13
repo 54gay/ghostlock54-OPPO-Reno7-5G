@@ -13,7 +13,7 @@
 
 KernelSU 加载逻辑已集成进 `ghostlock54` 本体，**不再需要任何 sh 脚本**。
 `ghostlock54` 提权成功后自动：解析 `kallsyms_lookup_name` → `insmod` 模块 →
-杀掉并重启 KernelSU Manager。
+完成后提示手动打开 KernelSU Manager。
 
 ## 配合 GhostLock54 使用
 

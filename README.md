@@ -10,8 +10,8 @@ GhostLock54 for OPPO Reno7 5G
 · 完整 capability 集合（CapPrm / CapEff / CapBnd = 0x0000003fffffffff，来自 init_cred）
 · SELinux 切换为 Permissive（enforce 1 → 0）
 · 清目标任务的 task_struct.seccomp，让子进程 fork 后不再被 Android seccomp filter 拦截（Seccomp: 0）
-· 不切换 SELinux 域：子进程保持 init_cred 绑定的 u:r:kernel:s0 域，拿到的是 kernel 域的 root shell
-· 提权成功后，直接在当前终端原地弹出一个拥有完整 Root 权限的 # Shell（该功能已停止更新，详见下方「停止更新说明」）
+· SELinux 域：默认模式不切换（子进程保持 init_cred 绑定的 u:r:kernel:s0，root shell 交给 KernelSU）；`-s` 模式 setcon 到 u:r:shell:s0
+· `-s/--shell` 模式：提权成功后直接在当前终端弹出拥有完整 Root 权限的 # Shell（不加载 KernelSU）
 
 文件放置约定
 
@@ -21,14 +21,10 @@ GhostLock54 for OPPO Reno7 5G
 · /data/local/tmp/kernelsu.ko —— KernelSU 模块（可用 -m/--module 指定其它路径）
 
 KernelSU 加载逻辑已集成进 ghostlock54 本体（不再需要任何 sh 脚本）：
-exploit 提权成功后自动解析 kallsyms_lookup_name 地址、insmod 模块、并杀掉重启
+exploit 提权成功后自动解析 kallsyms_lookup_name 地址、insmod 模块，完成后提示手动打开
 KernelSU Manager。
 
-停止更新说明
-
-「原地弹出 # shell」功能停止更新。
-
-当前版本有两种模式：
+两种使用模式：
 
 · **默认**：加载 KernelSU（late-load kernelsu.ko），完成后提示手动打开 Manager，root shell 由 KernelSU 提供（u:r:ksu:s0）；
 · **`-s/--shell`**：只拿 root shell，**不加载 KernelSU**，适合临时执行一次 root 命令。
