@@ -625,7 +625,7 @@ static void ksu_set_kptr(int v) {
  * /proc/kallsyms 可达十几 MB，且单次 read() 只会返回一部分（seq_file），
  * 因此必须循环读取、分块扫描。 */
 static unsigned long ksu_resolve_kln(void) {
-  static char chunk[65536 + 256];
+  static char chunk[65536 + 256 + 1];
   ksu_set_kptr(1);
   for (int round = 0; round < 2; round++) {
     int fd = open("/proc/kallsyms", O_RDONLY | O_CLOEXEC);
@@ -636,6 +636,7 @@ static unsigned long ksu_resolve_kln(void) {
       ssize_t n = read(fd, chunk + keep, 65536);
       if (n <= 0) break;
       size_t total = keep + (size_t)n;
+      chunk[total] = 0;
       char *p = chunk;
       while ((p = strstr(p, "kallsyms_lookup_name")) != NULL) {
         if (p > chunk && p[-1] == ' ' && p[20] == '\n') break;
@@ -696,7 +697,7 @@ static int ksu_insmod_binary(const char *path, const char *params) {
 static void ksu_load_module(void) {
   pr_info("[KSU] resolving kallsyms_lookup_name...\n");
   unsigned long kln = ksu_resolve_kln();
-  if (!kln) { pr_error("[KSU] kln resolve failed\n"); return; }
+  if (!kln) { pr_error("[KSU] kln resolve failed\n"); }
   pr_info("[KSU] kln=0x%016lx\n", kln);
 
   char params[96];
@@ -704,7 +705,8 @@ static void ksu_load_module(void) {
 
   int ret = ksu_insmod(g_module_path, params);
   if (ret != 0) {
-    pr_warning("[KSU] finit_module failed (errno=%d), trying insmod binary\n", errno);
+    int saved = errno;
+    pr_warning("[KSU] finit_module failed (errno=%d), trying insmod binary\n", saved);
     ret = ksu_insmod_binary(g_module_path, params);
   }
   if (ret == 0) pr_success("[KSU] insmod ret=0\n");
@@ -758,7 +760,7 @@ int main(int argc, char **argv) {
   }
 
   /* 参数校验失败时只打印帮助、不执行 exploit */
-  if (module_given && access(g_module_path, F_OK) != 0) {
+  if (!g_shell_mode && module_given && access(g_module_path, F_OK) != 0) {
     pr_warning("module file not found: %s\n", g_module_path);
     usage(argv[0]);
     return 2;
@@ -860,8 +862,12 @@ int main(int argc, char **argv) {
     (void)write(task_pipe[1], pair, sizeof(pair));
     close(task_pipe[1]);
 
-    while (__atomic_load_n(done_flag, __ATOMIC_ACQUIRE) == 0) {
-      __asm__ volatile("yield" ::: "memory");
+    {
+      unsigned spins = 0;
+      while (__atomic_load_n(done_flag, __ATOMIC_ACQUIRE) == 0) {
+        if (((++spins) & 0x3ff) == 0 && getppid() == 1) _exit(2); /* 父进程已死 */
+        __asm__ volatile("yield" ::: "memory");
+      }
     }
 
     pr_success("[CHILD] uid=%d gid=%d euid=%d egid=%d\n",
@@ -894,13 +900,16 @@ int main(int argc, char **argv) {
       }
     }
 
-    dup2(__orig_stdout, STDOUT_FILENO);
-    dup2(__orig_stdout, STDERR_FILENO);
+    if (__orig_stdout >= 0) {
+      dup2(__orig_stdout, STDOUT_FILENO);
+      dup2(__orig_stdout, STDERR_FILENO);
+    }
     signal(SIGHUP, SIG_IGN);
 
     if (g_shell_mode) {
       pr_success("[CHILD] root shell (KernelSU NOT loaded). Type 'exit' to leave.\n");
       fflush(stdout);
+      signal(SIGHUP, SIG_DFL);
       setenv("PATH", "/sbin:/system/sbin:/system/bin:/system/xbin", 1);
       execl("/system/bin/sh", "sh", (char *)NULL);
       pr_warning("[CHILD] exec /system/bin/sh failed: %s\n", strerror(errno));
@@ -949,7 +958,14 @@ int main(int argc, char **argv) {
   __atomic_store_n(done_flag, 1, __ATOMIC_RELEASE);
   fflush(stdout);
 
-  /* 1) 等子进程（模块加载 + 提示）结束 */
+  if (g_shell_mode) {
+      /* root shell 在前台共用同一个 tty，父进程不能被 Ctrl-C/Ctrl-Z 杀掉 */
+      signal(SIGINT,  SIG_IGN);
+      signal(SIGQUIT, SIG_IGN);
+      signal(SIGTSTP, SIG_IGN);
+  }
+
+  /* 1) 等子进程（模块加载 / root shell）结束 */
   int cstatus = 0;
   pid_t wp = waitpid(child_pid, &cstatus, 0);
   if (wp < 0 && errno != ECHILD) {
@@ -960,17 +976,14 @@ int main(int argc, char **argv) {
   }
   fflush(stdout);
 
-  if (g_shell_mode) {
-      /* root shell 是前台的，等它退出即可 */
-      _exit(0);
-  }
-
-  /* 2) daemonize：原进程退出，让 adb shell 拿回提示符 */
+  /* 2) daemonize：原进程退出，让 adb shell 拿回提示符；
+   *    同时保留一个守护进程，防止内核侧悬挂指针引发 panic */
   pid_t dpid = fork();
   if (dpid < 0) {
       pr_error("daemonize fork failed: %s\n", strerror(errno));
   } else if (dpid > 0) {
-      _exit(0);
+      int code = WIFEXITED(cstatus) ? WEXITSTATUS(cstatus) : 1;
+      _exit(code);
   }
 
   /* 3) 子进程 = daemon：脱离会话、脱离控制终端 */
