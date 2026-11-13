@@ -47,13 +47,16 @@ sh /data/local/tmp/kernelsu.sh /path/to/kernelsu.ko
 
 编译
 
-一条命令搞定（make 会先编模块，再把它链接进 ghostlock54）。不建 build/ 目录，产物就放在 kernelsu/ 下：
+一条命令搞定（make 会先编模块，再把它链接进 ghostlock54）。不建 build/ 目录，产物就在模块源码旁边：
 
 ```
-kernelsu/kernelsu.ko     # 内嵌用：STRIP=1 时是 strip 后的副本（约 325KB）；STRIP=0 时是符号链接
-kernelsu/kernelsu_ko.o   # objcopy 对象文件
-ghostlock54              # 最终单文件
+kernelsu/src/kernel/kernelsu.ko           # make 编出来的模块（带调试段）
+kernelsu/src/kernel/kernelsu.stripped.ko  # 内嵌用的副本（STRIP=1 时 strip，约 325KB；STRIP=0 时是指向 kernelsu.ko 的符号链接）
+kernelsu/src/kernel/kernelsu_ko.o         # objcopy 出来的 blob 对象（链接用，链接完可删）
+ghostlock54                               # 最终单文件
 ```
+
+运行时 ghostlock54 释放到 /data/local/tmp 的文件名始终是 `kernelsu.ko`。
 
 ```sh
 make            # 默认 STRIP=1：内嵌前去掉 ko 的调试段（ko 约 325KB，二进制约 360KB）
