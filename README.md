@@ -50,8 +50,8 @@ sh /data/local/tmp/kernelsu.sh /path/to/kernelsu.ko
 一条命令搞定（make 会先编模块，再把它链接进 ghostlock54）。所有构建产物都在 `build/`：
 
 ```
-build/kernelsu.full.ko   # make 编出来的原始模块（带调试段）
-build/kernelsu.ko        # 内嵌进 ghostlock54 的那份（默认已 strip）
+build/kernelsu.full.ko   # 符号链接 -> kernelsu/src/kernel/kernelsu.ko（不复制，省空间）
+build/kernelsu.ko        # 内嵌用：STRIP=1 时是 strip 后的副本（约 325KB）；STRIP=0 时是符号链接
 build/kernelsu_ko.o      # objcopy 对象文件
 ghostlock54              # 最终单文件
 ```
