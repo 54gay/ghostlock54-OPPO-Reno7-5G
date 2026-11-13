@@ -37,11 +37,11 @@ $(BIN): ghostlock54.c module
 	  ln -sfn $(CURDIR)/$(KO) $(KO_STRIP); \
 	fi
 	@echo "[make] embedded ko: $$(stat -Lc %s $(KO_STRIP)) bytes"
-	llvm-objcopy -I binary -O elf64-littleaarch64 -B aarch64 \
+	( cd $(dir $(KO_STRIP)) && llvm-objcopy -I binary -O elf64-littleaarch64 -B aarch64 \
 	  --redefine-sym _binary_kernelsu_stripped_ko_start=_binary_kernelsu_ko_start \
 	  --redefine-sym _binary_kernelsu_stripped_ko_end=_binary_kernelsu_ko_end \
 	  --redefine-sym _binary_kernelsu_stripped_ko_size=_binary_kernelsu_ko_size \
-	  $(KO_STRIP) $(KO_OBJ)
+	  $(notdir $(KO_STRIP)) $(notdir $(KO_OBJ)) )
 	$(CC) $(CFLAGS) ghostlock54.c $(KO_OBJ) -o $(BIN)
 	@echo "[make] built: $(BIN) ($$(stat -c %s $(BIN)) bytes)"
 
