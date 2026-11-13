@@ -24,7 +24,6 @@
 #include <ucontext.h>
 #include <unistd.h>
 #include <time.h>
-#include <selinux/selinux.h>
 
 // ================= Logging System =================
 #define COLOR_GREEN "\033[32m"
@@ -882,20 +881,17 @@ int main(int argc, char **argv) {
       }
     }
 
-    /* ---------- setcon 到 shell 域 ---------- */
+    /* 不做 setcon：保持 init_cred 绑定的 u:r:kernel:s0 域 */
     {
-      char pre[256] = {0}, post[256] = {0};
+      char ctx[256] = {0};
       int f = open("/proc/self/attr/current", O_RDONLY | O_CLOEXEC);
-      if (f >= 0) { ssize_t n = read(f, pre, sizeof(pre) - 1); close(f); if (n > 0) pre[n] = 0; }
-      if (setcon("u:r:shell:s0") == 0) {
-        f = open("/proc/self/attr/current", O_RDONLY | O_CLOEXEC);
-        if (f >= 0) { ssize_t n = read(f, post, sizeof(post) - 1); close(f); if (n > 0) post[n] = 0; }
-        pr_success("[CHILD] context: %s -> %s\n", pre, post);
-      } else {
-        pr_warning("[CHILD] setcon failed: %s (errno=%d)\n", strerror(errno), errno);
+      if (f >= 0) {
+        ssize_t n = read(f, ctx, sizeof(ctx) - 1);
+        close(f);
+        if (n > 0) ctx[n] = 0;
+        pr_success("[CHILD] context: %s", ctx);
       }
     }
-    /* -------------------------------------- */
 
     dup2(__orig_stdout, STDOUT_FILENO);
     dup2(__orig_stdout, STDERR_FILENO);

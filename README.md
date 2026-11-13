@@ -10,7 +10,7 @@ GhostLock54 for OPPO Reno7 5G
 · 完整 capability 集合（CapPrm / CapEff / CapBnd = 0x0000003fffffffff，来自 init_cred）
 · SELinux 切换为 Permissive（enforce 1 → 0）
 · 清目标任务的 task_struct.seccomp，让子进程 fork 后不再被 Android seccomp filter 拦截（Seccomp: 0）
-· SELinux 域：默认模式不切换（子进程保持 init_cred 绑定的 u:r:kernel:s0，root shell 交给 KernelSU）；`-s` 模式 setcon 到 u:r:shell:s0
+· SELinux 域：**不做 setcon**，子进程保持 init_cred 绑定的 `u:r:kernel:s0`（exploit 已先把 SELinux 切到 permissive，kernel 域可直接执行命令）
 · `-s/--shell` 模式：提权成功后直接在当前终端弹出拥有完整 Root 权限的 # Shell（不加载 KernelSU）
 
 文件放置约定
@@ -29,7 +29,7 @@ KernelSU Manager。
 · **默认**：加载 KernelSU（late-load kernelsu.ko），完成后提示手动打开 Manager，root shell 由 KernelSU 提供（u:r:ksu:s0）；
 · **`-s/--shell`**：只拿 root shell，**不加载 KernelSU**，适合临时执行一次 root 命令。
 
-说明：`-s` 模式下终端里会直接出现 `#` 提示符，exploit 自身 `setcon("u:r:shell:s0")`；退出 shell 后 root 即消失（无持久 root）。默认模式不 setcon，交给 KernelSU。
+说明：`-s` 模式下终端里会直接出现 `#` 提示符（context `u:r:kernel:s0`，SELinux permissive）；退出 shell 后 root 即消失（无持久 root）。
 
 防内核崩溃提示
 
@@ -37,10 +37,10 @@ KernelSU Manager。
 
 编译
 
-需要 libselinux（exploit 用 setcon 切换 SELinux 域，Android 系统核心库，bionic 环境自带头文件和动态库）：
+不需要额外库（已移除 setcon，仅依赖 libc/libpthread）：
 
 ```sh
-clang -O2 -pthread ghostlock54.c -o ghostlock54 -lselinux
+clang -O2 -pthread ghostlock54.c -o ghostlock54
 ```
 
 如果提示找不到 selinux/selinux.h，说明当前编译环境不是 Termux 或 NDK 内置路径，需要额外指定：
@@ -51,12 +51,12 @@ clang -O2 -pthread ghostlock54.c -o ghostlock54 \
   -L/data/data/com.termux/files/usr/lib -lselinux
 ```
 
-如果链接报 undefined symbol: setcon，就是漏了 -lselinux，加上即可。
+
 
 验证动态库依赖：
 
 ```sh
-nm -u ghostlock54 | grep -i selinux    # 能看到 setcon（来自 libselinux）
+nm -u ghostlock54 | grep -i selinux    # 应无输出（已不再链接 libselinux）
 ```
 
 运行
@@ -120,18 +120,15 @@ Seccomp:        0
 
 CapEff 为 0x3fffffffff，即 bit 0..37 全 1，共 38 位，对应 Linux 5.4 内核已知的全部 capability（CAP_LAST_CAP = 37，CAP_AUDIT_READ）。这是因为 cred 指针被整体替换为 init_cred，而非逐位写入 cap 位图。init_cred 自带完整 cap 集合，且 user_ns 指向 init_user_ns，不受 SECURE_NOROOT 等 securebits 影响。
 
-关于 SELinux 域（`-s` 模式）
+关于 SELinux 域
 
-exploit 完成后，子进程 uid 是 0、CapEff 全满、Seccomp 清零，SELinux context 初始是 u:r:kernel:s0——因为 cred 被整体替换为 init_cred，而 init_cred->security 绑定的就是 kernel 域的 sid。
+提权后子进程 uid=0、CapEff 全满，SELinux context 是 `u:r:kernel:s0`——因为 cred 被整体替换为 init_cred，而 init_cred->security 绑定的就是 kernel 域的 sid。
 
-`-s/--shell` 模式会在提权完成后调用 setcon("u:r:shell:s0") 切到 shell 域，理由：
+该版本**不调用 setcon**，直接用回原来的 kernel 域：
 
-· KernelSU 模块默认开启 SELinux 强制模式（setenforce 1）。在强制模式下，u:r:kernel:s0 的 shell 无法执行 /system/bin 下的命令（会被 SELinux 拒绝并终止），这样 ghostlock 给出的 # shell 就没法正常用了。
-· u:r:shell:s0 是 Android 的 shell 域，权限足够（能 exec /system/bin 命令、能加载内核模块、能读写 /data 等），强制模式下也能正常工作。
-· 切换是单向放宽：kernel → shell 允许；反向（无 root 的 shell 域切回 kernel 域）不允许。只有拿全 cap 的 kernel 域 root 才能自由 setcon 到任意放宽的目标域。
-· 切换依赖 libselinux（编译需 -lselinux）。
-
-默认模式（不加 `-s`）不做 setcon，直接加载 KernelSU，root shell 由 KernelSU 提供 u:r:ksu:s0，exploit 自己不上 shell。
+· exploit 在提权过程中已把 SELinux 切为 permissive（enforce 1 → 0），因此 kernel 域的 root shell 可以直接执行 /system/bin 命令、加载模块；
+· 默认模式加载 KernelSU 后由模块自行决定 enforcing，root shell 由 KernelSU 提供 `u:r:ksu:s0`；
+· `-s/--shell` 模式不加载模块，SELinux 保持 permissive，root shell 的 context 就是 `u:r:kernel:s0`。
 
 实现要点
 
@@ -221,7 +218,7 @@ KernelSU 集成
 
 模块是 runtime 加载（late-load），不修改 boot.img / 任何分区；重启后重新跑一次 ghostlock54 即可。
 
-SELinux：模块默认 setenforce 1（强制模式）；若某状态（例如旧的 exploit 破坏过 SELinux）强制模式让系统异常，加载时加 permissive=1 参数保持当前模式。注意强制模式下 u:r:kernel:s0 的 shell 不能执行 /system/bin 命令，因此 exploit 提权后会 setcon 到 u:r:shell:s0 再执行加载与 Manager 重启。
+SELinux：模块默认 setenforce 1（强制模式）；若某状态（例如旧的 exploit 破坏过 SELinux）强制模式让系统异常，加载时加 permissive=1 参数保持当前模式。exploit 不再 setcon，提权阶段 SELinux 为 permissive（由 exploit 写入），模块加载不受影响。
 
 详见 kernelsu/README.md 与 kernelsu/SUMMARY_5.4_KSU.md（移植全过程与踩坑记录，包括 ColorOS 隐藏内核反提权 oplus_root_check 的绕过、5.4 原生 sepolicy 注入、终端 su 修复、rmmod panic 教训等）。
 
@@ -230,11 +227,11 @@ kernelsu/ 目录下的源代码派生自 KernelSU，按 GPL-2.0 分发，与主�
 变更说明（相对上一版）
 
 · KernelSU 加载逻辑集成进 ghostlock54（不再需要 sh 脚本）：exploit 自动解析 kln、insmod，结束后提示手动打开 KernelSU Manager；新增 -m/--module 与 -h/--help 参数。
-· 新增 `-s/--shell`：只开 root shell（setcon 到 u:r:shell:s0），不加载 KernelSU；默认模式加载模块并提示打开 Manager。
+· 新增 `-s/--shell`：只开 root shell（保持 u:r:kernel:s0，不 setcon），不加载 KernelSU；默认模式加载模块并提示打开 Manager。
 · 文件路径统一到 /data/local/tmp/ 根目录：ghostlock54、kernelsu.ko 两个文件都放 /data/local/tmp/ 下，不再使用 /data/local/tmp/kernelsu/ 子目录。
 · 删除 write_value(child_task + 0x8d0, 0)：adb shell 场景下子进程 seccomp.mode 本来就是 0，该写为空操作。写入次数由 5 次降到 4 次，减少一次 PI 竞态失败点，成功率由约 80% 提升。若在 App 进程内跑（父进程带 seccomp filter），需要把这步加回。
 · log_context 保留：攻击前后打印进程上下文（纯文件 IO，读 /proc/self/attr/current）。
-· 编译命令：clang -O2 -pthread ghostlock54.c -o ghostlock54 -lselinux
+· 编译命令：clang -O2 -pthread ghostlock54.c -o ghostlock54
 
 许可证
 

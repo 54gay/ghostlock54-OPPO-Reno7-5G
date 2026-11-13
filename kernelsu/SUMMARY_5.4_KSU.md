@@ -38,7 +38,7 @@
   adb shell -t /data/local/tmp/ghostlock54
   ```
 
-- **`-s/--shell`**：`ghostlock54` 会原地弹出 `#` shell（并 `setcon` 到 `u:r:shell:s0`），
+- **`-s/--shell`**：`ghostlock54` 会原地弹出 `#` shell（不 setcon，保持 `u:r:kernel:s0`），
   但该模式**不加载 KernelSU**；要在 root shell 里手动加载模块，可在该 shell 内执行：
 
   ```sh
@@ -140,7 +140,7 @@ ColorOS 在 kernel 里内置了提权检测，检测到 app uid → 0 会直接�
   下的命令**（会被拒绝并终止）。规避方式：
   - **默认模式**：不依赖 exploit 原地 shell，直接用 KernelSU 的 `su`
     拿 `u:r:ksu:s0` shell；
-  - **`-s/--shell`**：exploit 会 `setcon("u:r:shell:s0")` 并给出 root shell
+  - **`-s/--shell`**：exploit 不 setcon（保持 `u:r:kernel:s0`）并给出 root shell
     （不加载模块），或手动 `runcon u:r:shell:s0 sh 脚本`，或加载时用 `permissive=1`。
 
 ## 危险操作记录（勿踩）
