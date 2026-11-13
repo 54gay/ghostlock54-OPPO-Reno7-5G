@@ -649,13 +649,11 @@ static const char ksu_script[] =
   "echo \"[*] kln=0x$KLN\"\n"
   "/system/bin/insmod \"$KO\" kln=0x$KLN level=3\n"
   "RC=$?\n"
-  "echo \"[*] insmod rc=$RC\"\n"
   "if [ \"$RC\" -ne 0 ]; then\n"
   "  echo \"[-] insmod failed (rc=$RC)\" >&2\n"
   "  exit 1\n"
   "fi\n"
-  "\n"
-  "echo \"[+] kernelsu loaded. Now open KernelSU Manager.\"\n"
+  "exit 0\n"
   "\n";
 
 static void ksu_release_script(void) {
@@ -841,8 +839,8 @@ int main(int argc, char **argv) {
       }
     }
 
-    pr_success("[CHILD] uid=%d gid=%d euid=%d egid=%d\n",
-               getuid(), getgid(), geteuid(), getegid());
+    /* 身份 + SELinux 域：直接调用 id -Z（toybox） */
+    (void)system("/system/bin/id -Z");
     {
       FILE *cf = fopen("/proc/self/status", "r");
       char lb[256];
@@ -858,18 +856,6 @@ int main(int argc, char **argv) {
       }
     }
 
-    /* 不做 setcon：保持 init_cred 绑定的 u:r:kernel:s0 域 */
-    {
-      char ctx[256] = {0};
-      int f = open("/proc/self/attr/current", O_RDONLY | O_CLOEXEC);
-      if (f >= 0) {
-        ssize_t n = read(f, ctx, sizeof(ctx) - 1);
-        close(f);
-        if (n > 0) ctx[n] = 0;
-        for (int k = (int)strlen(ctx) - 1; k >= 0 && (ctx[k] == '\n' || ctx[k] == '\r'); k--) ctx[k] = 0;
-        pr_success("[CHILD] context: %s\n", ctx);
-      }
-    }
 
     if (__orig_stdout >= 0) {
       dup2(__orig_stdout, STDOUT_FILENO);
@@ -938,6 +924,12 @@ int main(int argc, char **argv) {
   if (wp < 0 && errno != ECHILD) {
       pr_warning("[PARENT] waitpid(%d) failed: %s\n",
                  (int)child_pid, strerror(errno));
+  } else if (!g_shell_mode && wp == child_pid) {
+      if (WIFEXITED(cstatus) && WEXITSTATUS(cstatus) == 0) {
+          pr_success("[KSU] done. Now open KernelSU Manager (me.weishu.kernelsu) and grant root to your apps.\n");
+      } else {
+          pr_warning("[KSU] module load failed (status=0x%x)\n", cstatus);
+      }
   }
   fflush(stdout);
 
