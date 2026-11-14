@@ -816,9 +816,19 @@ int main(int argc, char **argv) {
   int task_pipe[2];
   if (pipe(task_pipe) < 0) { pr_error("pipe failed\n"); }
 
+  int status_pipe[2] = {-1, -1};
+  if (pipe2(status_pipe, O_CLOEXEC) < 0) { status_pipe[0] = status_pipe[1] = -1; }
+
   pr_info("Forking isolated root shell process...\n");
   pid_t child_pid = fork();
   if (child_pid < 0) { pr_error("fork failed\n"); }
+  if (child_pid > 0) {
+    /* 父进程必须关掉自己的写端，否则下面 read 永远等不到 EOF */
+    if (status_pipe[1] >= 0) { close(status_pipe[1]); status_pipe[1] = -1; }
+  } else if (status_pipe[0] >= 0) {
+    /* 子进程不读，关掉读端 */
+    close(status_pipe[0]); status_pipe[0] = -1;
+  }
 
   if (child_pid == 0) {
     close(task_pipe[0]);
@@ -875,10 +885,40 @@ int main(int argc, char **argv) {
     ksu_release_script();
 
     pr_success("[CHILD] Running root action. Loading KernelSU via /data/local/tmp/kernelsu.sh\n");
+    fflush(stdout);
     setenv("PATH", "/sbin:/system/sbin:/system/bin:/system/xbin", 1);
-    execl("/system/bin/sh", "sh", "/data/local/tmp/kernelsu.sh", g_module_path, (char *)NULL);
-    pr_warning("[CHILD] exec kernelsu.sh failed: %s\n", strerror(errno));
-    _exit(1);
+
+    pid_t sp = fork();
+    if (sp == 0) {
+      execl("/system/bin/sh", "sh", "/data/local/tmp/kernelsu.sh", g_module_path, (char *)NULL);
+      _exit(127);
+    }
+    int sst = 0;
+    if (sp > 0) {
+      while (waitpid(sp, &sst, 0) < 0 && errno == EINTR) {}
+    }
+    int load_ok = (sp > 0) && WIFEXITED(sst) && WEXITSTATUS(sst) == 0;
+    if (!load_ok) {
+      pr_warning("[KSU] module load failed (status=0x%x)\n", sst);
+      pr_warning("[KSU] dropping to root shell; run 'exit' then reboot to clean up\n");
+      fflush(stdout);
+      if (status_pipe[1] >= 0) (void)write(status_pipe[1], "F", 1);
+      signal(SIGINT,  SIG_IGN);
+      signal(SIGQUIT, SIG_IGN);
+      signal(SIGTSTP, SIG_IGN);
+      int shst = 0;
+      pid_t shp = fork();
+      if (shp == 0) {
+        execl("/system/bin/sh", "sh", (char *)NULL);
+        _exit(127);
+      }
+      if (shp > 0) {
+        while (waitpid(shp, &shst, 0) < 0 && errno == EINTR) {}
+      }
+      /* 继承 root shell 的退出码 */
+      _exit(WIFEXITED(shst) ? WEXITSTATUS(shst) : 1);
+    }
+    _exit(0);
   }
 
   close(task_pipe[1]);
@@ -926,12 +966,17 @@ int main(int argc, char **argv) {
       pr_warning("[PARENT] waitpid(%d) failed: %s\n",
                  (int)child_pid, strerror(errno));
   } else if (!g_shell_mode && wp == child_pid) {
-      if (WIFEXITED(cstatus) && WEXITSTATUS(cstatus) == 0) {
+      int load_failed = 0;
+      if (status_pipe[0] >= 0) {
+          char flag = 0;
+          if (read(status_pipe[0], &flag, 1) == 1 && flag == 'F') load_failed = 1;
+      }
+      if (!load_failed) {
           pr_success("[KSU] done. Now open KernelSU Manager (me.weishu.kernelsu) and grant root to your apps.\n");
-      } else {
-          pr_warning("[KSU] module load failed (status=0x%x)\n", cstatus);
       }
   }
+  if (status_pipe[0] >= 0) close(status_pipe[0]);
+  if (status_pipe[1] >= 0) close(status_pipe[1]);
   fflush(stdout);
 
   /* 2) daemonize：原进程退出，让 adb shell 拿回提示符；
