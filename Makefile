@@ -46,5 +46,9 @@ $(BIN): ghostlock54.c module
 	@echo "[make] built: $(BIN) ($$(stat -c %s $(BIN)) bytes)"
 
 clean:
-	rm -f $(KO_STRIP) $(KO_OBJ) $(BIN)
-	-$(MAKE) -C $(KERNEL_DIR) M=$(CURDIR)/kernelsu/src/kernel src=$(CURDIR)/kernelsu/src/kernel clean
+	@rm -f $(BIN) $(KO) $(KO_STRIP) $(KO_OBJ)
+	@find kernelsu/src/kernel -type f \( -name '*.o' -o -name '.*.cmd' -o -name '.*.d' \
+	  -o -name '*.o.tmp' -o -name '*.ko' -o -name '*.mod' -o -name '*.mod.c' \) -delete
+	@rm -f kernelsu/src/kernel/modules.order kernelsu/src/kernel/Module.symvers
+	@rm -rf kernelsu/src/kernel/.tmp_versions kernelsu/src/kernel/.tmp_*
+	@echo "[make] clean done"

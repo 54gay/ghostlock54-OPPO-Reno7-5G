@@ -17,3 +17,4 @@ patch_*.py
 modules.order
 Module.symvers
 *.mod
+*.mod.c
