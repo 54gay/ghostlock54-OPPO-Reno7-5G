@@ -691,10 +691,6 @@ static void usage(const char *prog) {
 }
 
 int main(int argc, char **argv) {
-  if (getuid() != 0 && getuid() != 2000) {
-    fprintf(stderr, "Permission denied\n");
-    return 1;
-  }
   setvbuf(stdout, NULL, _IONBF, 0);
   __orig_stdout = dup(STDOUT_FILENO);
   process_pid = getpid();
