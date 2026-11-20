@@ -634,7 +634,7 @@ static const char ksu_script[] =
   "  exit 1\n"
   "fi\n"
   "\n"
-  "if grep -q kernelsu /proc/modules 2>/dev/null; then\n"
+  "if grep -q kernelsu /proc/modules 2>/dev/null || [ -d /sys/module/kernelsu ]; then\n"
   "  echo \"[+] kernelsu already loaded\"\n"
   "  exit 0\n"
   "fi\n"
@@ -843,8 +843,12 @@ int main(int argc, char **argv) {
       }
     }
 
-    /* 身份 + SELinux 域：直接调用 id -Z（toybox） */
-    (void)system("/system/bin/id -Z");
+    /* 身份 + SELinux 域：带 [CHILD] 前缀输出（同 CapPrm 风格） */
+    pr_success("[CHILD] ");
+    if (system("/system/bin/id") != 0) {
+      printf("\n");
+      fflush(stdout);
+    }
     {
       FILE *cf = fopen("/proc/self/status", "r");
       char lb[256];
@@ -900,15 +904,17 @@ int main(int argc, char **argv) {
       pr_warning("[KSU] dropping to root shell; run 'exit' then reboot to clean up\n");
       fflush(stdout);
       if (status_pipe[1] >= 0) (void)write(status_pipe[1], "F", 1);
-      signal(SIGINT,  SIG_IGN);
-      signal(SIGQUIT, SIG_IGN);
-      signal(SIGTSTP, SIG_IGN);
       int shst = 0;
       pid_t shp = fork();
       if (shp == 0) {
         execl("/system/bin/sh", "sh", (char *)NULL);
         _exit(127);
       }
+      if (shp < 0) _exit(1);   /* fork 失败：按失败退出，避免被当成成功 */
+      /* 先 fork 再忽略信号：避免 shell 继承 SIG_IGN 影响 Ctrl-C */
+      signal(SIGINT,  SIG_IGN);
+      signal(SIGQUIT, SIG_IGN);
+      signal(SIGTSTP, SIG_IGN);
       if (shp > 0) {
         while (waitpid(shp, &shst, 0) < 0 && errno == EINTR) {}
       }
@@ -949,12 +955,10 @@ int main(int argc, char **argv) {
   __atomic_store_n(done_flag, 1, __ATOMIC_RELEASE);
   fflush(stdout);
 
-  if (g_shell_mode) {
-      /* root shell 在前台共用同一个 tty，父进程不能被 Ctrl-C/Ctrl-Z 杀掉 */
-      signal(SIGINT,  SIG_IGN);
-      signal(SIGQUIT, SIG_IGN);
-      signal(SIGTSTP, SIG_IGN);
-  }
+  /* 父进程等待期间不能被 Ctrl-C/Ctrl-Z 杀掉（子进程可能进入回退 shell） */
+  signal(SIGINT,  SIG_IGN);
+  signal(SIGQUIT, SIG_IGN);
+  signal(SIGTSTP, SIG_IGN);
 
   /* 1) 等子进程（模块加载 / root shell）结束 */
   int cstatus = 0;
