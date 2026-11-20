@@ -596,6 +596,7 @@ static char g_module_path[256] = "/data/local/tmp/kernelsu.ko";
 static int g_leak_only;
 static int g_shell_mode;
 
+
 /* ---------- 释放内嵌的 kernelsu.ko ---------- */
 extern const unsigned char _binary_kernelsu_ko_start[];
 extern const unsigned char _binary_kernelsu_ko_end[];
@@ -968,7 +969,11 @@ int main(int argc, char **argv) {
           if (read(status_pipe[0], &flag, 1) == 1 && flag == 'F') load_failed = 1;
       }
       if (!load_failed) {
-          pr_success("[KSU] done. Now open KernelSU Manager (me.weishu.kernelsu) and grant root to your apps.\n");
+          if (WIFEXITED(cstatus) && WEXITSTATUS(cstatus) == 0) {
+              pr_success("[KSU] done. Now open KernelSU Manager (me.weishu.kernelsu) and grant root to your apps.\n");
+          } else {
+              pr_warning("[KSU] failed (status=0x%x)\n", cstatus);
+          }
       }
   }
   if (status_pipe[0] >= 0) close(status_pipe[0]);
