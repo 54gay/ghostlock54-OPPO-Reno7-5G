@@ -234,7 +234,7 @@ SELinux：模块默认 setenforce 1（强制模式）；若某状态（例如旧
 
 详见 kernelsu/README.md 与 kernelsu/SUMMARY_5.4_KSU.md（移植全过程与踩坑记录，包括 ColorOS 隐藏内核反提权 oplus_root_check 的绕过、5.4 原生 sepolicy 注入、终端 su 修复、rmmod panic 教训等）。
 
-kernelsu/ 目录下的源代码派生自 KernelSU，按 GPL-2.0 分发，与主仓库的 Apache-2.0 分开。
+kernelsu/ 目录下的源代码派生自 [KernelSU](https://github.com/tiann/KernelSU)，按 [GPL-2.0](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html) 分发，与主仓库的 [Apache-2.0](LICENSE) 分开。
 
 变更说明（相对上一版）
 
@@ -248,4 +248,4 @@ kernelsu/ 目录下的源代码派生自 KernelSU，按 GPL-2.0 分发，与主�
 
 许可证
 
-Apache License 2.0
+本项目按 [Apache License 2.0](LICENSE) 分发。
