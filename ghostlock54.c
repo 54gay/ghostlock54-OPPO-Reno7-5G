@@ -595,6 +595,7 @@ static int write_value(uint64_t target, uint64_t value) {
 static char g_module_path[256] = "/data/local/tmp/kernelsu.ko";
 static int g_leak_only;
 static int g_shell_mode;
+static int g_force_release;
 
 
 /* ---------- 释放内嵌的 kernelsu.ko ---------- */
@@ -603,8 +604,9 @@ extern const unsigned char _binary_kernelsu_ko_end[];
 
 static void ksu_release_module(void) {
   const char *path = "/data/local/tmp/kernelsu.ko";
-  if (access(path, F_OK) == 0) {
-    pr_info("[KSU] %s exists, not overwritten\n", path);
+  int existed = (access(path, F_OK) == 0);
+  if (existed && !g_force_release) {
+    pr_info("[KSU] %s exists, not overwritten (use -f to force)\n", path);
     return;
   }
   size_t len = (size_t)(_binary_kernelsu_ko_end - _binary_kernelsu_ko_start);
@@ -622,7 +624,7 @@ static void ksu_release_module(void) {
   }
   close(fd);
   (void)chmod(path, 0644);
-  pr_info("[KSU] released %s (%zu bytes)\n", path, len);
+  pr_info("[KSU] %s %s (%zu bytes)\n", existed ? "overwritten" : "created", path, len);
 }
 /* --------------------------------------- */
 
@@ -663,8 +665,9 @@ static const char ksu_script[] =
 
 static void ksu_release_script(void) {
   const char *path = "/data/local/tmp/kernelsu.sh";
-  if (access(path, F_OK) == 0) {
-    pr_info("[KSU] %s exists, not overwritten\n", path);
+  int existed = (access(path, F_OK) == 0);
+  if (existed && !g_force_release) {
+    pr_info("[KSU] %s exists, not overwritten (use -f to force)\n", path);
     return;
   }
   int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0755);
@@ -680,7 +683,7 @@ static void ksu_release_script(void) {
   }
   close(fd);
   (void)chmod(path, 0755);
-  pr_info("[KSU] released %s\n", path);
+  pr_info("[KSU] %s %s\n", existed ? "overwritten" : "created", path);
 }
 /* -------------------------------------- */
 
@@ -694,6 +697,7 @@ static void usage(const char *prog) {
           "\n"
           "Special:\n"
           "  -s, --shell         Root shell only (do NOT load KernelSU)\n"
+          "  -f, --force         Overwrite existing released files\n"
           "  --leak-only         Only run the KASLR/leak verification (no writes)\n"
           "  --leak-y-only       Only verify the Y task leak (no exploitation)\n",
           prog);
@@ -710,7 +714,7 @@ int main(int argc, char **argv) {
       usage(argv[0]);
       return 0;
     } else if (strcmp(argv[i], "-m") == 0 || strcmp(argv[i], "--module") == 0) {
-      if (i + 1 >= argc) {
+      if (i + 1 >= argc || argv[i + 1][0] == '-') {
         pr_warning("missing value for %s\n", argv[i]);
         usage(argv[0]);
         return 2;
@@ -719,6 +723,8 @@ int main(int argc, char **argv) {
       module_given = 1;
     } else if (strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "--shell") == 0) {
       g_shell_mode = 1;
+    } else if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--force") == 0) {
+      g_force_release = 1;
     } else if (strcmp(argv[i], "--leak-only") == 0) {
       g_leak_only = 1;
     } else if (strcmp(argv[i], "--leak-y-only") == 0) {
