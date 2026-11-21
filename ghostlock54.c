@@ -597,6 +597,7 @@ static int g_leak_only;
 static int g_shell_mode;
 static int g_force_release;
 static int g_permissive_only;
+static char g_shell_path[256] = "/system/bin/sh";
 
 
 /* ---------- 释放内嵌的 kernelsu.ko ---------- */
@@ -697,7 +698,7 @@ static void usage(const char *prog) {
           "  -h, --help          Show this help\n"
           "\n"
           "Special:\n"
-          "  -s, --shell         Root shell only (do NOT load KernelSU)\n"
+          "  -s, --shell [PATH]  Root shell only (default /system/bin/sh)\n"
           "  -f, --force         Overwrite existing released files\n"
           "  -p, --permissive-only  Only set SELinux permissive (no KSU, no shell)\n"
           "  --leak-only         Only run the KASLR/leak verification (no writes)\n"
@@ -723,6 +724,9 @@ int main(int argc, char **argv) {
       snprintf(g_module_path, sizeof(g_module_path), "%s", argv[++i]);
     } else if (strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "--shell") == 0) {
       g_shell_mode = 1;
+      if (i + 1 < argc && argv[i + 1][0] != '\0' && argv[i + 1][0] != '-') {
+        snprintf(g_shell_path, sizeof(g_shell_path), "%s", argv[++i]);
+      }
     } else if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--force") == 0) {
       g_force_release = 1;
     } else if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--permissive-only") == 0) {
@@ -903,8 +907,8 @@ int main(int argc, char **argv) {
       fflush(stdout);
       signal(SIGHUP, SIG_DFL);
       setenv("PATH", "/sbin:/system/sbin:/system/bin:/system/xbin", 1);
-      execl("/system/bin/sh", "sh", (char *)NULL);
-      pr_warning("[CHILD] exec /system/bin/sh failed: %s\n", strerror(errno));
+      execl(g_shell_path, "sh", (char *)NULL);
+      pr_warning("[CHILD] exec %s failed: %s\n", g_shell_path, strerror(errno));
       _exit(1);
     }
 
