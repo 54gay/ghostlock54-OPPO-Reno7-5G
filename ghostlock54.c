@@ -603,6 +603,10 @@ extern const unsigned char _binary_kernelsu_ko_end[];
 
 static void ksu_release_module(void) {
   const char *path = "/data/local/tmp/kernelsu.ko";
+  if (access(path, F_OK) == 0) {
+    pr_info("[KSU] %s exists, not overwritten\n", path);
+    return;
+  }
   size_t len = (size_t)(_binary_kernelsu_ko_end - _binary_kernelsu_ko_start);
   if (!len) { pr_warning("[KSU] embedded module is empty\n"); return; }
   int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
@@ -625,7 +629,7 @@ static void ksu_release_module(void) {
 /* ---------- 释放 kernelsu.sh ---------- */
 static const char ksu_script[] =
   "#!/system/bin/sh\n"
-  "# kernelsu.sh - released by ghostlock54 (overwritten on every run)\n"
+  "# kernelsu.sh - released by ghostlock54 (kept if it already exists)\n"
   "# Loads KernelSU module. Run inside a root shell (e.g. ghostlock54 -s).\n"
   "KO=\"${1:-/data/local/tmp/kernelsu.ko}\"\n"
   "\n"
@@ -659,6 +663,10 @@ static const char ksu_script[] =
 
 static void ksu_release_script(void) {
   const char *path = "/data/local/tmp/kernelsu.sh";
+  if (access(path, F_OK) == 0) {
+    pr_info("[KSU] %s exists, not overwritten\n", path);
+    return;
+  }
   int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0755);
   if (fd < 0) {
     pr_warning("[KSU] cannot release %s: %s\n", path, strerror(errno));
@@ -941,6 +949,7 @@ int main(int argc, char **argv) {
   usleep(50000);
   int after = read_enforce();
   pr_success("SELinux write_trigger=%d enforce=%d->%d\n", wr, before, after);
+  if (after == 0) pr_success("SELinux permissive verified\n");
 
   if (!write_value(child_task + 0x808, k_init_cred)) { pr_error("child cred -> init_cred failed\n"); }
   pr_success("Child task->cred -> init_cred\n");
